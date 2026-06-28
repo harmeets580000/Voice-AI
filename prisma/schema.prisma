@@ -1,0 +1,464 @@
+// AI Receptionist — Phase 1 schema (Scope §5 + doc 03 §1.1.1).
+// RULE: every customer-data model carries `organizationId` and is always queried scoped
+// by it. Every entity that also lives in Vapi mirrors its Vapi ids + syncStatus locally;
+// our DB is the source of truth.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  super_admin
+  org_admin
+  org_staff
+}
+
+enum OrgStatus {
+  trial
+  active
+  suspended
+}
+
+enum BookingStatus {
+  booked
+  cancelled
+  completed
+  no_show
+}
+
+enum BookingSource {
+  phone
+  whatsapp
+  web
+  admin
+}
+
+enum SyncStatus {
+  pending
+  synced
+  failed
+  stale
+}
+
+enum CallDirection {
+  inbound
+  outbound
+}
+
+enum ReminderChannel {
+  sms
+  whatsapp
+  email
+}
+
+enum ReminderStatus {
+  pending
+  sent
+  failed
+}
+
+// ---------- Tenancy root ----------
+
+model Organization {
+  id                  String    @id @default(cuid())
+  name                String
+  slug                String    @unique
+  timezone            String    @default("UTC") // IANA tz, e.g. "America/Los_Angeles"
+  dateFormat          String    @default("dd/MM/yyyy HH:mm") // luxon pattern; configurable
+  status              OrgStatus @default(trial)
+  plan                String?
+  logoUrl             String?
+  businessHoursConfig Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  users      User[]
+  staff      Staff[]
+  services   Service[]
+  schedules  StaffSchedule[]
+  timeOff    StaffTimeOff[]
+  customers  Customer[]
+  bookings   Booking[]
+  calls      Call[]
+  messages   CallMessage[]
+  documents  Document[]
+  kbFiles    KnowledgeBaseFile[]
+  vapiTools  VapiTool[]
+  reminders  Reminder[]
+  syncLogs   SyncLog[]
+  vapiConfig OrgVapiConfig?
+  theme      OrgTheme?
+
+  @@map("organizations")
+}
+
+// ---------- Per-org Vapi config (mirrored ids + sync) ----------
+
+model OrgVapiConfig {
+  id             String       @id @default(cuid())
+  organizationId String       @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  provider            String  @default("vapi") // "vapi" | "retell"
+  vapiOrgId           String?
+  vapiAssistantId     String?
+  vapiPhoneNumberId   String?
+  vapiPhoneNumber     String? @unique // E.164
+  vapiKnowledgeBaseId String?
+
+  greeting String?
+  prompt   String?
+  voice    String?
+  llmModel String?
+
+  // Optional per-customer Vapi credential override. NULL => use the platform key.
+  // Stored ENCRYPTED (AES-256-GCM); plaintext never leaves the server.
+  vapiPrivateKeyEnc String?
+  vapiKeyLast4      String?
+
+  syncStatus   SyncStatus @default(pending)
+  lastSyncedAt DateTime?
+  syncError    String?
+  vapiRaw      Json?
+
+  updatedAt DateTime @updatedAt
+
+  @@index([vapiAssistantId])
+  @@map("org_vapi_config")
+}
+
+// ---------- Theming ----------
+
+model OrgTheme {
+  id              String       @id @default(cuid())
+  organizationId  String       @unique
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tokens          Json // stores overrides only; unset values fall back to platform default
+  defaultMode     String       @default("light") // "light" | "dark"
+  allowUserToggle Boolean      @default(true)
+  updatedAt       DateTime     @updatedAt
+
+  @@map("org_theme")
+}
+
+// Single-row platform defaults (reserved id "platform").
+model PlatformTheme {
+  id          String   @id @default("platform")
+  tokens      Json
+  defaultMode String   @default("light")
+  updatedAt   DateTime @updatedAt
+
+  @@map("platform_theme")
+}
+
+model PlatformVoiceConfig {
+  id                String   @id @default("platform")
+  provider          String   @default("vapi")
+  vapiPrivateKeyEnc String?
+  vapiKeyLast4      String?
+  defaultVoice      String?
+  defaultLlmModel   String?
+  defaultGreeting   String?
+  defaultPrompt     String?
+  publicApiBaseUrl  String?
+  updatedAt         DateTime @updatedAt
+
+  @@map("platform_voice_config")
+}
+
+// ---------- Users ----------
+
+model User {
+  id             String        @id @default(cuid())
+  organizationId String? // null for super_admin
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String        @unique
+  name           String?
+  passwordHash   String
+  role           Role
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  staff Staff[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+// ---------- Staff / services / schedules ----------
+
+model Staff {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?
+  phone          String?
+  title          String?
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id])
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  schedules StaffSchedule[]
+  timeOff   StaffTimeOff[]
+  bookings  Booking[]
+
+  @@index([organizationId])
+  @@map("staff")
+}
+
+model Service {
+  id              String       @id @default(cuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  durationMinutes Int
+  price           Decimal?     @db.Decimal(10, 2)
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+
+  bookings Booking[]
+
+  @@index([organizationId])
+  @@map("services")
+}
+
+model StaffSchedule {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffId        String
+  staff          Staff        @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  dayOfWeek      Int // 0=Sunday .. 6=Saturday
+  startTime      String // "HH:mm" in org timezone
+  endTime        String // "HH:mm" in org timezone
+
+  @@unique([organizationId, staffId, dayOfWeek]) // one schedule per staff per day
+  @@index([organizationId])
+  @@index([staffId, dayOfWeek])
+  @@map("staff_schedules")
+}
+
+model StaffTimeOff {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffId        String
+  staff          Staff        @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  startDatetime  DateTime
+  endDatetime    DateTime
+  reason         String?
+
+  @@index([organizationId])
+  @@index([staffId, startDatetime])
+  @@map("staff_time_off")
+}
+
+// ---------- Customers / bookings ----------
+
+model Customer {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String?
+  phone          String?
+  email          String?
+  notes          String?
+  createdAt      DateTime     @default(now())
+
+  bookings Booking[]
+  calls    Call[]
+
+  @@index([organizationId])
+  @@index([organizationId, phone])
+  @@map("customers")
+}
+
+model Booking {
+  id                    String        @id @default(cuid())
+  organizationId        String
+  organization          Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerId            String?
+  customer              Customer?     @relation(fields: [customerId], references: [id])
+  staffId               String?
+  staff                 Staff?        @relation(fields: [staffId], references: [id])
+  serviceId             String?
+  service               Service?      @relation(fields: [serviceId], references: [id])
+  startDatetime         DateTime
+  endDatetime           DateTime
+  status                BookingStatus @default(booked)
+  source                BookingSource @default(phone)
+  paymentStatus         String? // future (Phase 4)
+  googleCalendarEventId String?
+  notes                 String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, startDatetime])
+  @@index([staffId, startDatetime])
+  @@map("bookings")
+}
+
+// ---------- Calls / transcripts ----------
+
+model Call {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerId     String?
+  customer       Customer?     @relation(fields: [customerId], references: [id])
+  direction      CallDirection @default(inbound)
+
+  vapiCallId          String    @unique
+  vapiOrgId           String?
+  vapiAssistantId     String?
+  vapiPhoneNumberId   String?
+  phoneCallProvider   String?
+  phoneCallProviderId String?
+  fromNumber          String?
+  toNumber            String?
+  endedReason         String?
+  cost                Decimal?  @db.Decimal(10, 4)
+  costBreakdown       Json?
+  recordingUrl        String?
+  summary             String?
+  startedAt           DateTime?
+  endedAt             DateTime?
+  durationSeconds     Int?
+  vapiRaw             Json? // full raw provider call payload (all data for the call)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  messages CallMessage[]
+
+  @@index([organizationId])
+  @@map("calls")
+}
+
+model CallMessage {
+  id               String       @id @default(cuid())
+  organizationId   String
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  callId           String
+  call             Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+  role             String // "assistant" | "user" | "system" | "tool"
+  text             String
+  secondsFromStart Float?
+  createdAt        DateTime     @default(now())
+
+  @@index([organizationId])
+  @@index([callId])
+  @@map("call_messages")
+}
+
+// ---------- Voice tools mirror ----------
+
+model VapiTool {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vapiToolId     String?
+  name           String // built-ins: check_availability | book_appointment | lookup_customer
+  kind           String       @default("builtin") // "builtin" | "custom"
+  enabled        Boolean      @default(true) // only enabled tools are pushed to Vapi
+  description    String? // shown to the assistant; editable for custom tools
+  parameters     Json? // JSON-schema-ish parameter spec for custom function tools
+  serverUrl      String? // built-ins use our webhook; custom tools use a user-supplied URL
+  staticParams   Json? // includes our organization_id
+  provider       String       @default("vapi")
+  syncStatus     SyncStatus   @default(pending)
+  lastSyncedAt   DateTime?
+  syncError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("vapi_tools")
+}
+
+// ---------- Sync history (audit of every Vapi sync run) ----------
+
+model SyncLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type           String // "provision" | "resync" | "tools_sync"
+  status         String // "success" | "partial" | "failed"
+  summary        String? // one-line human summary
+  details        Json? // full detail: counts, per-step results, ids touched
+  error          String? // error message when status = failed
+  triggeredBy    String? // userId that initiated the run (null = system)
+  startedAt      DateTime     @default(now())
+  finishedAt     DateTime?
+
+  @@index([organizationId, startedAt])
+  @@map("sync_logs")
+}
+
+// ---------- Knowledge ----------
+
+model Document {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  title          String
+  storagePath    String
+  mimeType       String?
+  sizeBytes      Int?
+  uploadedAt     DateTime     @default(now())
+
+  kbFiles KnowledgeBaseFile[]
+
+  @@index([organizationId])
+  @@map("documents")
+}
+
+model KnowledgeBaseFile {
+  id                  String       @id @default(cuid())
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documentId          String
+  document            Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  vapiFileId          String?
+  vapiKnowledgeBaseId String?
+  sizeBytes           Int?
+  syncStatus          SyncStatus   @default(pending)
+  lastSyncedAt        DateTime?
+  syncError           String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  @@index([organizationId])
+  @@index([documentId])
+  @@map("knowledge_base_files")
+}
+
+// ---------- Reminders (Phase 3 wiring; table exists in Phase 1) ----------
+
+model Reminder {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bookingId      String
+  channel        ReminderChannel
+  scheduledFor   DateTime
+  status         ReminderStatus  @default(pending)
+  sentAt         DateTime?
+  createdAt      DateTime        @default(now())
+
+  @@index([organizationId])
+  @@index([status, scheduledFor])
+  @@map("reminders")
+}

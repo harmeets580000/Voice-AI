@@ -1,0 +1,140 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Theme tokens — light defaults. ThemeProvider overrides these at runtime per the active
+   org; declared here so there's a correct baseline before JS hydrates. Components consume
+   these (never hardcoded hex) so light/dark + per-org theming always work. */
+:root {
+  --accent: #6366f1;
+  --accent-soft: #4f46e5;
+  --on-accent: #ffffff;
+  --positive: #16a34a;
+  --danger: #dc2626;
+
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --text: #0f1422;
+  --ink2: #3f4660;
+  --muted: #5a6178;
+  --muted2: #6b7287;
+  --muted3: #7c8396;
+  --faint: #8a91a3;
+  --faint2: #9aa0b2;
+  --faint3: #aeb4c2;
+  --border: rgba(15, 23, 42, 0.18);
+  --control-border: rgba(15, 23, 42, 0.32);
+
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-inter), system-ui, sans-serif;
+  --font-body: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+[data-theme="dark"] {
+  --accent: #818cf8;
+  --accent-soft: #a5b4fc;
+  --on-accent: #0b0d14;
+  --positive: #34d399;
+  --danger: #f87171;
+
+  --bg: #0a0c12;
+  --card: #14161f;
+  --text: #eef1f8;
+  --ink2: #cdd3e0;
+  --muted: #9aa0b2;
+  --muted2: #b6bccb;
+  --muted3: #898f9f;
+  --faint: #797f90;
+  --faint2: #6e7385;
+  --faint3: #5b6072;
+  --border: rgba(255, 255, 255, 0.16);
+  --control-border: rgba(255, 255, 255, 0.28);
+}
+
+/* Derived surfaces (hover/elevated/selected) — computed from tokens so they always adapt to
+   light/dark without being separate editable tokens. */
+:root {
+  --surface: color-mix(in srgb, var(--text) 5%, var(--card));
+  --surface-2: color-mix(in srgb, var(--text) 9%, var(--card));
+  --accent-tint: color-mix(in srgb, var(--accent) 14%, var(--card));
+}
+
+/* Expose tokens to Tailwind v4 utilities (bg-card, text-muted, border-border, etc.). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-accent-tint: var(--accent-tint);
+  --color-text: var(--text);
+  --color-ink2: var(--ink2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-positive: var(--positive);
+  --color-danger: var(--danger);
+  --color-border: var(--border);
+  --color-control: var(--control-border);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --animate-fade-in: fade-in 0.3s ease-out both;
+  --animate-slide-up: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-scale-in: scale-in 0.18s ease-out both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+/* Make markdown (help page) theme-aware by mapping prose vars to our tokens. */
+.prose {
+  --tw-prose-body: var(--ink2);
+  --tw-prose-headings: var(--text);
+  --tw-prose-links: var(--accent);
+  --tw-prose-bold: var(--text);
+  --tw-prose-bullets: var(--faint);
+  --tw-prose-counters: var(--muted);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--muted);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-code: var(--text);
+  --tw-prose-pre-bg: var(--surface-2);
+  --tw-prose-pre-code: var(--text);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit*)",
+      "Bash(npm run dev)",
+      "Bash(npm test*)",
+      "Bash(npx vitest run*)",
+      "Bash(npm run lint)",
+      "Bash(npm view *)",
+      "Bash(az containerapp show *)",
+      "mcp__Claude_Preview__preview_screenshot",
+      "mcp__Claude_Preview__preview_inspect"
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_receptionist_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ai_receptionist_test
+      DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/ai_receptionist_test
+      JWT_ACCESS_SECRET: ci-access-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      CREDENTIAL_ENCRYPTION_KEY: Y2ktY2ktY2ktY2ktY2ktY2ktY2ktY2ktMzJieXRl
+      VOICE_PROVIDER: fake
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Prisma generate + sync schema
+        # Uses db push (no committed migrations yet); switch to `migrate deploy` once an
+        # initial migration is generated against a database.
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests (+ coverage on critical modules)
+        run: npm run coverage
+
+      - name: Integration tests (real Postgres, fake voice provider)
+        run: npm run test:integration
+
+      - name: Build
+        run: npm run build
