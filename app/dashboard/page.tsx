@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import {
   CalendarCheck,
@@ -9,28 +10,27 @@ import {
   Phone,
   BookOpen,
   Building2,
-  Mic,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@shared/ui/AppShell";
 import { useAuth } from "@features/auth/AuthProvider";
 import { Role } from "@domain/enums";
-import { Logo } from "@shared/ui/Logo";
-import { PageContainer } from "@shared/ui/primitives";
+import { PageContainer, PageHeader, Spinner, cx } from "@shared/ui/primitives";
+import type { DashboardPeriod } from "@contracts/analytics";
+import { useDashboard } from "@features/dashboard/useDashboard";
+import { OrgDashboard } from "@features/dashboard/OrgDashboard";
+import { PlatformDashboard } from "@features/dashboard/PlatformDashboard";
 
-const QUICK_LINKS: { href: string; label: string; desc: string; icon: LucideIcon }[] = [
-  { href: "/bookings", label: "Bookings", desc: "View and create appointments", icon: CalendarCheck },
-  { href: "/calendar", label: "Calendar", desc: "See your week at a glance", icon: CalendarDays },
-  { href: "/staff", label: "Staff", desc: "Manage your team", icon: Users },
-  { href: "/services", label: "Services", desc: "What you offer", icon: Scissors },
-  { href: "/calls", label: "Calls", desc: "Transcripts & recordings", icon: Phone },
-  { href: "/knowledge", label: "Knowledge", desc: "Docs the assistant uses", icon: BookOpen },
+const QUICK_LINKS: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/bookings", label: "Bookings", icon: CalendarCheck },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/customers", label: "Customers", icon: Users },
+  { href: "/services", label: "Services", icon: Scissors },
+  { href: "/calls", label: "Calls", icon: Phone },
+  { href: "/knowledge", label: "Knowledge", icon: BookOpen },
 ];
 
-const SUPER_LINKS: { href: string; label: string; desc: string; icon: LucideIcon }[] = [
-  { href: "/organizations", label: "Organizations", desc: "Onboard & manage customers", icon: Building2 },
-  { href: "/settings?tab=platform-voice", label: "Platform voice", desc: "Global Vapi defaults", icon: Mic },
-];
+const PERIODS: DashboardPeriod[] = ["7d", "30d", "90d"];
 
 export default function DashboardPage() {
   return (
@@ -43,44 +43,74 @@ export default function DashboardPage() {
 function Dashboard() {
   const { user } = useAuth();
   const isSuper = user?.role === Role.SUPER_ADMIN;
-  const links = isSuper ? [...SUPER_LINKS, ...QUICK_LINKS] : QUICK_LINKS;
-  const name = user?.name || user?.email?.split("@")[0] || "there";
+  const [period, setPeriod] = useState<DashboardPeriod>("30d");
+  const { data, isLoading, isError } = useDashboard(period);
 
   return (
-    <PageContainer>
-      <div className="mb-8 flex flex-col items-center gap-4 py-6 text-center animate-[slide-up_0.4s_cubic-bezier(0.16,1,0.3,1)]">
-        <Logo withWordmark={false} size={52} />
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-text">
-            Welcome back, {name}
-          </h1>
-          <p className="mx-auto mt-2 max-w-md text-sm text-muted">
-            {isSuper
-              ? "Manage every organization, onboard new customers, and keep their AI receptionists running smoothly."
-              : "Your AI receptionist is answering calls and booking appointments. Here's everything you can manage."}
-          </p>
-        </div>
-      </div>
+    <PageContainer size="wide">
+      <PageHeader
+        title="Dashboard"
+        subtitle={
+          isSuper && data?.scope === "platform"
+            ? "Platform overview — pick an organization from the switcher to drill in."
+            : "Your AI receptionist at a glance."
+        }
+        actions={
+          <div role="tablist" className="flex gap-1 text-sm">
+            {PERIODS.map((p) => (
+              <button
+                key={p}
+                role="tab"
+                aria-selected={period === p}
+                onClick={() => setPeriod(p)}
+                className={cx(
+                  "rounded-lg px-3 py-1.5 transition-colors",
+                  period === p
+                    ? "bg-accent text-on-accent"
+                    : "border border-control text-text hover:bg-surface",
+                )}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {links.map((l, i) => (
-          <Link
-            key={l.href}
-            href={l.href}
-            style={{ animationDelay: `${i * 40}ms` }}
-            className="group flex items-start gap-3 rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-150 animate-[slide-up_0.4s_both] hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-md"
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-tint text-accent transition-colors group-hover:bg-accent group-hover:text-on-accent">
-              <l.icon size={20} />
-            </span>
-            <span>
-              <span className="block font-medium text-text transition-colors group-hover:text-accent">
-                {l.label}
-              </span>
-              <span className="mt-0.5 block text-xs text-muted">{l.desc}</span>
-            </span>
-          </Link>
-        ))}
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-16 text-sm text-muted">
+          <Spinner size={18} /> Loading analytics…
+        </div>
+      ) : isError || !data ? (
+        <p className="py-16 text-center text-sm text-danger">
+          Could not load analytics. Try again.
+        </p>
+      ) : data.scope === "platform" ? (
+        <PlatformDashboard data={data} />
+      ) : (
+        <OrgDashboard data={data} />
+      )}
+
+      {/* Quick links */}
+      <div className="mt-8">
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-faint">
+          Quick links
+        </h2>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          {(isSuper
+            ? [{ href: "/organizations", label: "Organizations", icon: Building2 }, ...QUICK_LINKS]
+            : QUICK_LINKS
+          ).map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              className="group flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm shadow-sm transition-colors hover:border-accent/40 hover:bg-surface"
+            >
+              <l.icon size={16} className="text-accent" />
+              <span className="text-text group-hover:text-accent">{l.label}</span>
+            </Link>
+          ))}
+        </div>
       </div>
     </PageContainer>
   );

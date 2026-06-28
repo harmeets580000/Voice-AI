@@ -165,8 +165,12 @@ export async function importNewCalls(
   return inserted;
 }
 
-export async function listCalls(orgId: string) {
+export async function listCalls(
+  orgId: string,
+  opts?: { assistantId?: string },
+) {
   return tenantDb(orgId).call.findMany({
+    where: opts?.assistantId ? { assistantId: opts.assistantId } : undefined,
     orderBy: { createdAt: "desc" },
     include: { customer: { select: { name: true, phone: true } } },
   });

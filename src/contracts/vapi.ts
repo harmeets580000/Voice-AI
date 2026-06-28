@@ -73,6 +73,8 @@ export const VapiSettings = z.object({
   // Per-customer key: only the last-4 and a boolean ever leave the server.
   hasCustomKey: z.boolean(),
   keyLast4: z.string().nullable(),
+  // Browser-safe Vapi PUBLIC key (used by the web-call simulator). Not a secret.
+  vapiPublicKey: z.string().nullable(),
 
   // Read-only webhook URLs this customer is wired to.
   toolsWebhookUrl: z.string(),
@@ -93,9 +95,31 @@ export const UpdateVapiSettingsRequest = z.object({
   llmModel: z.string().optional(),
   /** Write-only. If provided, stored encrypted; never echoed back. Empty string clears it. */
   privateKey: z.string().optional(),
+  /** Browser-safe Vapi PUBLIC key (not a secret) for the web-call simulator. */
+  vapiPublicKey: z.string().optional(),
 });
 export type UpdateVapiSettingsRequest = z.infer<
   typeof UpdateVapiSettingsRequest
+>;
+
+/** Active-assistant selector: list the account's assistants + which one this org uses. */
+export const AssistantSummary = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+});
+export type AssistantSummary = z.infer<typeof AssistantSummary>;
+
+export const AssistantListResponse = z.object({
+  assistants: z.array(AssistantSummary),
+  activeAssistantId: z.string().nullable(),
+});
+export type AssistantListResponse = z.infer<typeof AssistantListResponse>;
+
+export const SetActiveAssistantRequest = z.object({
+  assistantId: z.string().min(1),
+});
+export type SetActiveAssistantRequest = z.infer<
+  typeof SetActiveAssistantRequest
 >;
 
 export const TestKeyRequest = z.object({ apiKey: z.string().min(1) });

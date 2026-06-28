@@ -16,6 +16,12 @@ import type {
 export interface ProvisionOrgInput {
   organizationId: string;
   organizationName: string;
+  /**
+   * Our Assistant row id (multi-assistant). Baked into the assistant's call-ended
+   * `server.url` as `assistant_id` so call webhooks are attributed to the right assistant.
+   * Optional for back-compat with the single-assistant (org-level) provisioning path.
+   */
+  assistantId?: string;
   /** Public base URL the provider should call for tools + call-ended webhooks. */
   publicApiBaseUrl: string;
   assistant: {
@@ -137,6 +143,12 @@ export interface VoiceOptionDTO {
   provider?: string;
 }
 
+/** A lightweight assistant listing (for the active-assistant selector). */
+export interface ProviderAssistantSummary {
+  assistantId: string;
+  name?: string;
+}
+
 /** Assistant config pulled back from the provider (neutral shape). */
 export interface ProviderAssistantConfig {
   assistantId: string;
@@ -150,12 +162,23 @@ export interface ProviderAssistantConfig {
   raw?: unknown;
 }
 
+/** A tool as it currently exists on the provider (for reflecting Vapi → portal). */
+export interface ProviderToolSnapshot {
+  id: string;
+  name: string;
+  description?: string;
+  parameters?: unknown;
+  serverUrl?: string;
+}
+
 /** A read-back snapshot of an org's data from the provider (for pull-sync). */
 export interface ProviderSnapshot {
   assistant?: ProviderAssistantConfig;
   phoneNumber?: { id: string; number?: string };
   knowledgeBaseId?: string;
   providerOrgId?: string;
+  /** The assistant's tools as they exist in the provider right now. */
+  tools?: ProviderToolSnapshot[];
   calls: NormalizedCallRecord[];
 }
 
@@ -203,6 +226,11 @@ export interface VoiceProvider {
 
   /** Validate a candidate API key server-side (catches public-vs-private mistakes). */
   validateApiKey(apiKey: string): Promise<KeyValidationResult>;
+
+  /** List the assistants in the account (for the active-assistant selector). */
+  listAssistants(input: {
+    providerApiKey?: string;
+  }): Promise<ProviderAssistantSummary[]>;
 
   /** Available voices (live where possible, curated fallback). */
   listVoices(apiKey?: string): Promise<VoiceOptionDTO[]>;

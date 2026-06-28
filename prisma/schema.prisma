@@ -96,10 +96,21 @@ model Organization {
   vapiConfig OrgVapiConfig?
   theme      OrgTheme?
 
+  // Multi-assistant (1 org : N assistants). Tools/KB are an org-level library; each
+  // assistant selects a subset via the join tables below.
+  assistants              Assistant[]
+  assistantTools          AssistantTool[]
+  assistantKnowledgeFiles AssistantKnowledgeFile[]
+
   @@map("organizations")
 }
 
-// ---------- Per-org Vapi config (mirrored ids + sync) ----------
+// ---------- Per-org Vapi connection (org-level credential + sync) ----------
+// NOTE (multi-assistant migration): the per-assistant fields below
+// (vapiAssistantId / vapiPhoneNumber(Id) / vapiKnowledgeBaseId / greeting / prompt /
+// voice / llmModel) are being moved to the `Assistant` model (1 org : N assistants).
+// They are kept here temporarily so existing consumers compile during M-A1; M-A2
+// rewires consumers to `Assistant` and then these fields are removed.
 
 model OrgVapiConfig {
   id             String       @id @default(cuid())
@@ -108,20 +119,24 @@ model OrgVapiConfig {
 
   provider            String  @default("vapi") // "vapi" | "retell"
   vapiOrgId           String?
-  vapiAssistantId     String?
-  vapiPhoneNumberId   String?
-  vapiPhoneNumber     String? @unique // E.164
-  vapiKnowledgeBaseId String?
+  vapiAssistantId     String? // DEPRECATED → Assistant.providerAssistantId
+  vapiPhoneNumberId   String? // DEPRECATED → Assistant.providerPhoneNumberId
+  vapiPhoneNumber     String? @unique // DEPRECATED → Assistant.providerPhoneNumber
+  vapiKnowledgeBaseId String? // DEPRECATED → Assistant.providerKnowledgeBaseId
 
-  greeting String?
-  prompt   String?
-  voice    String?
-  llmModel String?
+  greeting String? // DEPRECATED → Assistant.greeting
+  prompt   String? // DEPRECATED → Assistant.prompt
+  voice    String? // DEPRECATED → Assistant.voice
+  llmModel String? // DEPRECATED → Assistant.llmModel
 
   // Optional per-customer Vapi credential override. NULL => use the platform key.
   // Stored ENCRYPTED (AES-256-GCM); plaintext never leaves the server.
   vapiPrivateKeyEnc String?
   vapiKeyLast4      String?
+
+  // Browser-safe Vapi PUBLIC key (NOT secret) — used by the web-call simulator
+  // (@vapi-ai/web) to start in-browser voice calls. Stored plain; returned to the client.
+  vapiPublicKey String?
 
   syncStatus   SyncStatus @default(pending)
   lastSyncedAt DateTime?
@@ -132,6 +147,83 @@ model OrgVapiConfig {
 
   @@index([vapiAssistantId])
   @@map("org_vapi_config")
+}
+
+// ---------- Assistants (1 org : N) — provider-neutral mirror + per-assistant config ----------
+// Field names are provider-neutral (provider* not vapi*) so Retell/other providers are
+// first-class. Our DB stays canonical; provider ids are join keys.
+
+model Assistant {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  isDefault      Boolean      @default(false)
+
+  // Provider mirror ids (per-assistant)
+  provider                String  @default("vapi") // "vapi" | "retell" | ...
+  providerAssistantId     String? @unique
+  providerPhoneNumberId   String?
+  providerPhoneNumber     String? @unique // E.164
+  providerKnowledgeBaseId String? // composed from this assistant's selected KB files
+
+  // Per-assistant config
+  greeting String?
+  prompt   String?
+  voice    String?
+  llmModel String?
+
+  // Sync tracking
+  syncStatus   SyncStatus @default(pending)
+  lastSyncedAt DateTime?
+  syncError    String?
+  providerRaw  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Per-assistant selections from the org-level tool / knowledge libraries
+  tools          AssistantTool[]
+  knowledgeFiles AssistantKnowledgeFile[]
+  calls          Call[]
+
+  @@index([organizationId])
+  @@index([providerAssistantId])
+  @@map("assistants")
+}
+
+// Join: which org-library tools an assistant uses (many-to-many).
+model AssistantTool {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String
+  assistant      Assistant    @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  toolId         String
+  tool           VapiTool     @relation(fields: [toolId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([assistantId, toolId])
+  @@index([organizationId])
+  @@index([toolId])
+  @@map("assistant_tools")
+}
+
+// Join: which org-library knowledge files an assistant uses (many-to-many).
+model AssistantKnowledgeFile {
+  id             String            @id @default(cuid())
+  organizationId String
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String
+  assistant      Assistant         @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  fileId         String
+  file           KnowledgeBaseFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  createdAt      DateTime          @default(now())
+
+  @@unique([assistantId, fileId])
+  @@index([organizationId])
+  @@index([fileId])
+  @@map("assistant_knowledge_files")
 }
 
 // ---------- Theming ----------
@@ -281,6 +373,7 @@ model Customer {
 
   @@index([organizationId])
   @@index([organizationId, phone])
+  @@index([organizationId, createdAt])
   @@map("customers")
 }
 
@@ -318,6 +411,9 @@ model Call {
   organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customerId     String?
   customer       Customer?     @relation(fields: [customerId], references: [id])
+  // Which assistant handled the call (multi-assistant). Nullable for legacy rows.
+  assistantId    String?
+  assistant      Assistant?    @relation(fields: [assistantId], references: [id])
   direction      CallDirection @default(inbound)
 
   vapiCallId          String    @unique
@@ -343,6 +439,8 @@ model Call {
   messages CallMessage[]
 
   @@index([organizationId])
+  @@index([organizationId, createdAt])
+  @@index([assistantId])
   @@map("calls")
 }
 
@@ -382,6 +480,9 @@ model VapiTool {
   syncError      String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+
+  // Assistants that selected this org-library tool.
+  assistantSelections AssistantTool[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -439,6 +540,9 @@ model KnowledgeBaseFile {
   syncError           String?
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
+
+  // Assistants that selected this org-library knowledge file.
+  assistantSelections AssistantKnowledgeFile[]
 
   @@index([organizationId])
   @@index([documentId])

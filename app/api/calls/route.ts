@@ -7,5 +7,7 @@ export const dynamic = "force-dynamic";
 
 export const GET = handleRoute(async (req) => {
   const { organizationId } = await withRequiredOrg(req);
-  return ok({ calls: await listCalls(organizationId) });
+  const assistantId =
+    new URL(req.url).searchParams.get("assistantId") ?? undefined;
+  return ok({ calls: await listCalls(organizationId, { assistantId }) });
 });

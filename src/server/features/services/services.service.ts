@@ -6,6 +6,29 @@ export function listServices(orgId: string) {
   return tenantDb(orgId).service.findMany({ orderBy: { name: "asc" } });
 }
 
+export function getService(orgId: string, id: string) {
+  return tenantDb(orgId).service.findFirst({ where: { id } });
+}
+
+/**
+ * Resolve a service by (case-insensitive) name for voice tools — exact match first, then a
+ * unique partial ("contains") match. Returns null if not found or ambiguous (caller can ask
+ * the assistant to call list_services).
+ */
+export async function findServiceByName(orgId: string, name: string) {
+  const db = tenantDb(orgId);
+  const trimmed = name.trim();
+  const exact = await db.service.findFirst({
+    where: { name: { equals: trimmed, mode: "insensitive" }, isActive: true },
+  });
+  if (exact) return exact;
+  const partial = await db.service.findMany({
+    where: { name: { contains: trimmed, mode: "insensitive" }, isActive: true },
+    take: 2,
+  });
+  return partial.length === 1 ? partial[0] : null;
+}
+
 export function createService(
   orgId: string,
   input: {

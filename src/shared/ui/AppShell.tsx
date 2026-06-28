@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState, Fragment } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -12,11 +12,16 @@ import {
   Clock,
   Contact,
   Phone,
+  PhoneIncoming,
+  PhoneOutgoing,
   BookOpen,
+  Wrench,
+  Bot,
   Settings,
   HelpCircle,
   Building2,
   FlaskConical,
+  ChevronDown,
   LogOut,
   type LucideIcon,
 } from "lucide-react";
@@ -29,28 +34,107 @@ import {
 import { Logo } from "./Logo";
 import { Spinner, Badge, cx } from "./primitives";
 
-// Ordered to match the "Get set up → Day to day" flow on the Help page.
-const NAV: { href: string; label: string; icon: LucideIcon }[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  // Setup
-  { href: "/staff", label: "Staff", icon: Users },
-  { href: "/services", label: "Services", icon: Scissors },
-  { href: "/schedules", label: "Schedules", icon: Clock },
-  { href: "/knowledge", label: "Knowledge", icon: BookOpen },
-  // Day to day
-  { href: "/bookings", label: "Bookings", icon: CalendarCheck },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/customers", label: "Customers", icon: Contact },
-  { href: "/calls", label: "Calls", icon: Phone },
-  // App
+type NavItem = { href: string; label: string; icon: LucideIcon };
+type NavGroup = { heading?: string; items: NavItem[] };
+type NavSection = {
+  title?: string;
+  icon?: LucideIcon;
+  groups: NavGroup[];
+  /** Shown (dimmed, non-clickable) when the section has no items yet. */
+  placeholder?: string;
+};
+
+// Two top-level sections — Inbound (the live AI receptionist) and Outbound (coming soon).
+// Within Inbound, ordered by the real setup dependency chain: build the bottom-up (services →
+// staff → schedules → knowledge → tools) before an assistant can answer, then day-to-day ops.
+// Dashboard / Account / Super-admin are cross-cutting and sit outside the two sections.
+const NAV_SECTIONS: NavSection[] = [
+  { groups: [{ items: [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }] }] },
+  {
+    title: "Inbound",
+    icon: PhoneIncoming,
+    groups: [
+      {
+        heading: "Setup",
+        items: [
+          { href: "/services", label: "Services", icon: Scissors },
+          { href: "/staff", label: "Staff", icon: Users },
+          { href: "/schedules", label: "Schedules", icon: Clock },
+          { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
+          { href: "/tools", label: "Tools", icon: Wrench },
+          { href: "/assistants", label: "Assistants", icon: Bot },
+        ],
+      },
+      {
+        heading: "Operations",
+        items: [
+          { href: "/calls", label: "Calls", icon: Phone },
+          { href: "/bookings", label: "Bookings", icon: CalendarCheck },
+          { href: "/calendar", label: "Calendar", icon: CalendarDays },
+          { href: "/customers", label: "Customers", icon: Contact },
+        ],
+      },
+    ],
+  },
+  {
+    title: "Outbound",
+    icon: PhoneOutgoing,
+    groups: [],
+    placeholder: "Coming soon",
+  },
+];
+
+// Pinned to the bottom of the sidebar (utility nav), separated from the feature sections above.
+const ACCOUNT_NAV: NavItem[] = [
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/help", label: "Help", icon: HelpCircle },
 ];
 
-const SUPER_NAV: { href: string; label: string; icon: LucideIcon }[] = [
+const SUPER_NAV: NavItem[] = [
   { href: "/organizations", label: "Organizations", icon: Building2 },
   { href: "/vapi-tester", label: "Vapi Tester", icon: FlaskConical },
 ];
+
+function NavHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="mb-1 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
+      {children}
+    </li>
+  );
+}
+
+function NavSectionHeader({
+  icon: Icon,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  icon?: LucideIcon;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="mb-1 mt-5 first:mt-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-1.5 rounded-md border-t border-border px-3 pb-1 pt-4 text-[11px] font-bold uppercase tracking-wider text-ink2 transition-colors hover:text-text"
+      >
+        {Icon && <Icon size={13} className="text-muted" />}
+        <span className="flex-1 text-left">{children}</span>
+        <ChevronDown
+          size={14}
+          className={cx(
+            "text-muted transition-transform",
+            collapsed && "-rotate-90",
+          )}
+        />
+      </button>
+    </li>
+  );
+}
 
 function NavLink({
   href,
@@ -90,9 +174,37 @@ function initials(nameOrEmail: string) {
 }
 
 /** Authenticated shell: redirects to /login when not signed in; renders top bar + nav. */
+const NAV_COLLAPSE_KEY = "navCollapsedSections";
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
+
+  // Collapsible nav sections (Inbound/Outbound), persisted across reloads. The nav only renders
+  // after the auth loading gate (client-side), so reading localStorage in the lazy initializer is
+  // safe — no SSR/hydration mismatch.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem(NAV_COLLAPSE_KEY);
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  function toggleSection(title: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      try {
+        localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -120,17 +232,53 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
       <div className="flex">
         <nav className="sticky top-[57px] flex h-[calc(100vh-57px)] w-56 shrink-0 flex-col border-r border-border">
-          <ul className="flex-1 space-y-0.5 overflow-y-auto p-3">
-            {NAV.map((n) => (
+          <ul className="themed-scrollbar flex-1 space-y-0.5 overflow-y-auto p-3">
+            {NAV_SECTIONS.map((section, si) => {
+              const isCollapsed = !!section.title && collapsed.has(section.title);
+              return (
+                <Fragment key={section.title ?? `s${si}`}>
+                  {section.title && (
+                    <NavSectionHeader
+                      icon={section.icon}
+                      collapsed={isCollapsed}
+                      onToggle={() => toggleSection(section.title!)}
+                    >
+                      {section.title}
+                    </NavSectionHeader>
+                  )}
+                  {!isCollapsed &&
+                    section.groups.map((group, gi) => (
+                      <li key={group.heading ?? `g${si}-${gi}`}>
+                        {group.heading && <NavHeading>{group.heading}</NavHeading>}
+                        <ul className="space-y-0.5">
+                          {group.items.map((n) => (
+                            <li key={n.href}>
+                              <NavLink {...n} />
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                  {!isCollapsed && section.placeholder && (
+                    <li className="px-3 py-2 text-xs italic text-faint">
+                      {section.placeholder}
+                    </li>
+                  )}
+                </Fragment>
+              );
+            })}
+          </ul>
+
+          {/* Utility nav (Account + Super-admin) pinned to the bottom, above the profile. */}
+          <ul className="space-y-0.5 border-t border-border p-3">
+            {ACCOUNT_NAV.map((n) => (
               <li key={n.href}>
                 <NavLink {...n} />
               </li>
             ))}
             {user.role === Role.SUPER_ADMIN && (
               <>
-                <li className="mb-1 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
-                  Super-admin
-                </li>
+                <NavHeading>Super-admin</NavHeading>
                 {SUPER_NAV.map((n) => (
                   <li key={n.href}>
                     <NavLink {...n} />

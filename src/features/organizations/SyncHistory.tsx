@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@shared/api/client";
-import { Card, Badge, Button } from "@shared/ui/primitives";
+import { Card, Badge, Button, cx } from "@shared/ui/primitives";
 import { Modal } from "@shared/ui/Modal";
-import { History } from "lucide-react";
+import { History, ChevronDown } from "lucide-react";
 import type { SyncLogListResponse, SyncLogDTO } from "@contracts/sync";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -15,8 +15,15 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 /** Full audit history of every Vapi sync run for an org, with per-run detail. */
-export function SyncHistory({ orgId }: { orgId: string }) {
+export function SyncHistory({
+  orgId,
+  defaultOpen = false,
+}: {
+  orgId: string;
+  defaultOpen?: boolean;
+}) {
   const [selected, setSelected] = useState<SyncLogDTO | null>(null);
+  const [expanded, setExpanded] = useState(defaultOpen);
 
   const { data } = useQuery({
     queryKey: ["sync-logs", orgId],
@@ -30,18 +37,35 @@ export function SyncHistory({ orgId }: { orgId: string }) {
 
   return (
     <Card className="space-y-3 text-sm">
-      <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 text-left"
+        aria-expanded={expanded}
+      >
         <History size={18} className="text-accent" />
         <h2 className="font-medium text-text">Sync history</h2>
-      </div>
-      <p className="text-xs text-muted">
-        Every provision, sync, and tools-sync run, newest first. Click a row for full detail.
-      </p>
+        {logs.length > 0 && <Badge tone="neutral">{logs.length}</Badge>}
+        <ChevronDown
+          size={16}
+          className={cx(
+            "ml-auto text-muted transition-transform",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
 
-      {logs.length === 0 ? (
-        <p className="text-muted">No sync runs yet.</p>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
+      {expanded && (
+        <p className="text-xs text-muted">
+          Every provision, sync, and tools-sync run, newest first. Click a row for full detail.
+        </p>
+      )}
+
+      {expanded &&
+        (logs.length === 0 ? (
+          <p className="text-muted">No sync runs yet.</p>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-border">
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-surface/60 text-left text-xs uppercase text-muted">
@@ -63,6 +87,13 @@ export function SyncHistory({ orgId }: { orgId: string }) {
                   </td>
                   <td className="px-3 py-2 text-text">
                     {TYPE_LABEL[l.type] ?? l.type}
+                    <span className="ml-2 text-xs text-muted">
+                      {l.details &&
+                      typeof l.details === "object" &&
+                      (l.details as { auto?: boolean }).auto
+                        ? "· auto"
+                        : "· manual"}
+                    </span>
                   </td>
                   <td className="px-3 py-2">
                     <Badge tone={tone(l.status)}>{l.status}</Badge>
@@ -72,8 +103,8 @@ export function SyncHistory({ orgId }: { orgId: string }) {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+          </div>
+        ))}
 
       <Modal
         open={!!selected}

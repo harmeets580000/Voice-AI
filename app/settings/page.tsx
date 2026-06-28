@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { SlidersHorizontal, Palette, Mic } from "lucide-react";
+import { SlidersHorizontal, Palette } from "lucide-react";
 import { AppShell } from "@shared/ui/AppShell";
 import { api } from "@shared/api/client";
 import {
@@ -16,10 +16,7 @@ import {
   cx,
 } from "@shared/ui/primitives";
 import { useToast } from "@shared/ui/Toast";
-import { useAuth } from "@features/auth/AuthProvider";
-import { Role } from "@domain/enums";
 import { ThemeConfigPage } from "@features/theme-config/ThemeConfigPage";
-import { PlatformVoiceSettings } from "@features/platform-settings/PlatformVoiceSettings";
 import {
   DATE_FORMAT_PRESETS,
   DEFAULT_DATE_FORMAT,
@@ -28,7 +25,7 @@ import {
 } from "@contracts/settings";
 import { formatDateTime } from "@shared/format";
 
-type Tab = "general" | "appearance" | "platform-voice";
+type Tab = "general" | "appearance";
 
 export default function SettingsRoute() {
   return (
@@ -41,18 +38,14 @@ export default function SettingsRoute() {
 }
 
 function SettingsPage() {
-  const { user } = useAuth();
   const params = useSearchParams();
-  const isSuper = user?.role === Role.SUPER_ADMIN;
-  const initial = (params.get("tab") as Tab) || "general";
+  const initial: Tab =
+    params.get("tab") === "appearance" ? "appearance" : "general";
   const [tab, setTab] = useState<Tab>(initial);
 
   const tabs: { id: Tab; label: string; icon: typeof Palette }[] = [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "appearance", label: "Appearance", icon: Palette },
-    ...(isSuper
-      ? [{ id: "platform-voice" as Tab, label: "Platform voice", icon: Mic }]
-      : []),
   ];
 
   return (
@@ -79,7 +72,6 @@ function SettingsPage() {
 
       {tab === "general" && <GeneralSettings />}
       {tab === "appearance" && <ThemeConfigPage />}
-      {tab === "platform-voice" && isSuper && <PlatformVoiceSettings />}
     </PageContainer>
   );
 }

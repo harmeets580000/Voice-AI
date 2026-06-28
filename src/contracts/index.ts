@@ -6,5 +6,6 @@ export * from "./theme";
 export * from "./vapi";
 export * from "./vapi-tester";
 export * from "./sync";
+export * from "./analytics";
 export * from "./knowledge";
 export * from "./settings";

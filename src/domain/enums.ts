@@ -71,10 +71,42 @@ export const CallDirection = {
 } as const;
 export type CallDirection = (typeof CallDirection)[keyof typeof CallDirection];
 
-/** The three custom tools the voice provider calls. */
+/**
+ * Receptionist tools the voice provider can call. The first three are the default
+ * auto-provisioned built-ins; the rest form the selectable org-level tool catalog
+ * (each assistant picks a subset). All are dispatched by the tool registry.
+ */
 export const ToolName = {
+  // Booking
   CHECK_AVAILABILITY: "check_availability",
   BOOK_APPOINTMENT: "book_appointment",
+  FIND_BOOKING: "find_booking",
+  LIST_BOOKINGS: "list_bookings",
+  CANCEL_BOOKING: "cancel_booking",
+  RESCHEDULE_BOOKING: "reschedule_booking",
+  // Customer
   LOOKUP_CUSTOMER: "lookup_customer",
+  GET_CUSTOMER: "get_customer",
+  ADD_CUSTOMER: "add_customer",
+  UPDATE_CUSTOMER: "update_customer",
+  LIST_CUSTOMERS: "list_customers",
+  // Service
+  LIST_SERVICES: "list_services",
+  GET_SERVICE: "get_service",
+  // Staff
+  LIST_STAFF: "list_staff",
+  GET_STAFF_AVAILABILITY: "get_staff_availability",
 } as const;
 export type ToolName = (typeof ToolName)[keyof typeof ToolName];
+
+/** Tool grouping for the catalog UI. */
+export const ToolGroup = {
+  BOOKING: "booking",
+  CUSTOMER: "customer",
+  SERVICE: "service",
+  STAFF: "staff",
+} as const;
+export type ToolGroup = (typeof ToolGroup)[keyof typeof ToolGroup];
+
+/** Read tools are safe to auto-run; write tools mutate data (assistant should confirm). */
+export type ToolAccess = "read" | "write";

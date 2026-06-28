@@ -32,6 +32,7 @@ fully apply.
 | Framework | **Next.js (App Router), TypeScript** — single full-stack app at repo root |
 | Backend | Next.js **Route Handlers** (`app/api/**/route.ts`), thin — they call feature services in `src/server/` |
 | Frontend | React Server/Client Components + **Tailwind** + **TanStack Query** |
+| Charts | **recharts** (dashboard analytics; colors wired to theme CSS vars) |
 | ORM / DB | **Prisma** + **PostgreSQL** (DB is the source of truth) |
 | Auth | JWT access + rotating refresh, **bcrypt**, delivered via **httpOnly cookies**; roles `super_admin`/`org_admin`/`org_staff` |
 | Validation | **Zod** on every route input and tool payload |
@@ -127,6 +128,36 @@ voice provider.
 
 **Pending = anything that needs live credentials** (the user provides these later, then we
 verify): run DB migrations + seed, run the integration suite, and a live Vapi call test.
+
+## Multi-assistant expansion (post-Phase 1)
+
+The model now supports **N assistants per organization** (was 1). Lasting decisions:
+- New `Assistant` model (1 org : N) holds per-assistant provider mirror ids + config
+  (provider-neutral names: `providerAssistantId`/`providerPhoneNumber`/…). `OrgVapiConfig` is now
+  the **org-level connection** (API key, `vapiOrgId`, `vapiPublicKey`). Its per-assistant fields are
+  **deprecated** (kept temporarily for the legacy single-assistant path + integration tests; remove
+  in the contract phase once UI/routes fully move to `assistants.service`).
+- **Tools + knowledge are an org-level library**; each assistant selects a subset via join tables
+  `AssistantTool` / `AssistantKnowledgeFile`. All three new models are in `CUSTOMER_DATA_MODELS`.
+- **Tool registry** (`src/server/features/receptionist-tools/tools.registry.ts`) is the single
+  source of truth for the full receptionist tool catalog (booking/customer/service/staff) — each
+  tool carries description + JSON-schema parameters (so the LLM/provider gets real schemas) + Zod +
+  handler. `runTool` dispatches via it; `builtinToolDefs()` = the 3 auto-provisioned built-ins,
+  `toolCatalog()` = the full selectable set seeded into each org's library.
+- **Per-assistant call attribution:** the assistant's call-ended `server.url` carries
+  `&assistant_id=` (our `Assistant.id`); the shared tool webhook stays org-only.
+- **Simulator:** per-assistant "call & see the demo" — primary path is a real Vapi **web voice call**
+  (`@vapi-ai/web`, browser, authed with the org `vapiPublicKey`); fallback is a Claude **text-chat**
+  via the new `SimulatorLlm` port + `src/server/adapters/llm/anthropic/` adapter (`@anthropic-ai/sdk`,
+  isolated like the voice SDK — see `test/unit/architecture/sdk-isolation.test.ts`). New env:
+  `ANTHROPIC_API_KEY`. Both run the assistant's selected tools through the same `runTool` dispatch.
+- **Nav** (`src/shared/ui/AppShell.tsx`) is now grouped by setup order: Setup (Services → Staff →
+  Schedules → Knowledge Base → Tools → Assistants) → Operations → Account.
+
+Status: `typecheck`, `lint`, `npm test` (**125 unit green**), and `npm run build` pass. After
+`npm run db:push:test`, integration is **34/35** — the one failure (`reflectAllOrgsFromVapi`) is a
+**pre-existing** fixture↔env mismatch (test stores a fake `"enc-blob"` credential that can't decrypt
+under a real `CREDENTIAL_ENCRYPTION_KEY`; untouched by this work).
 
 ## How to run it (once `.env.local` has DATABASE_URL etc.)
 

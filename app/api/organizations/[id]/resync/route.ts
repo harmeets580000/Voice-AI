@@ -16,7 +16,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export const POST = handleRoute(async (_req, ctx) => {
   const principal = await requireRole([Role.SUPER_ADMIN]);
   const { id } = await (ctx as Ctx).params;
-  const r = await syncOrganizationFromVapi(id, principal.userId);
+  const r = await syncOrganizationFromVapi(id, { triggeredBy: principal.userId });
   const res: SyncResponse = {
     syncStatus: r.syncStatus as SyncResponse["syncStatus"],
     importedCalls: r.importedCalls,

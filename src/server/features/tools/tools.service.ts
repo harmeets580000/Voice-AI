@@ -13,28 +13,20 @@ import { logger } from "@server/platform/logging/logger";
 import { decryptSecret } from "@server/platform/crypto/secretBox";
 import { getVoiceProvider } from "@server/config/providers";
 import { recordSyncLog } from "@server/features/sync/sync-log.service";
-import { ToolName } from "@domain/enums";
+import { Prisma } from "@prisma/client";
+import { toolCatalog } from "@server/features/receptionist-tools/tools.registry";
 import type {
   CreateToolRequest,
   UpdateToolRequest,
   VapiToolDTO,
 } from "@contracts/vapi";
 
-/** The 3 receptionist tools every org gets by default (handled by our own webhook). */
-const BUILTIN_TOOLS: { name: string; description: string }[] = [
-  {
-    name: ToolName.CHECK_AVAILABILITY,
-    description: "Check open appointment slots for a service on a given date.",
-  },
-  {
-    name: ToolName.BOOK_APPOINTMENT,
-    description: "Book an appointment for a customer in an open slot.",
-  },
-  {
-    name: ToolName.LOOKUP_CUSTOMER,
-    description: "Look up an existing customer by phone number.",
-  },
-];
+/**
+ * The full receptionist tool catalog seeded into every org's library, sourced from the tool
+ * registry so each carries its description + JSON-schema parameters. The 3 built-ins are enabled
+ * by default; the rest are present-but-disabled so each assistant can SELECT them per-assistant.
+ */
+const CATALOG_TOOLS = toolCatalog();
 
 function toolsWebhookUrl(orgId: string): string {
   return `${env.PUBLIC_API_BASE_URL}/api/webhook/voice/tools?organization_id=${encodeURIComponent(orgId)}`;
@@ -79,22 +71,23 @@ function toDTO(t: ToolRow): VapiToolDTO {
   };
 }
 
-/** Make sure the 3 built-in tool rows exist for the org (idempotent). */
+/** Make sure the org's tool-library rows exist for the full catalog (idempotent). */
 export async function ensureBuiltinTools(orgId: string): Promise<void> {
   const existing = await prisma.vapiTool.findMany({
     where: { organizationId: orgId },
     select: { name: true },
   });
   const have = new Set(existing.map((t) => t.name));
-  const missing = BUILTIN_TOOLS.filter((b) => !have.has(b.name));
+  const missing = CATALOG_TOOLS.filter((b) => !have.has(b.name));
   if (missing.length === 0) return;
   await prisma.vapiTool.createMany({
     data: missing.map((b) => ({
       organizationId: orgId,
       name: b.name,
       kind: "builtin",
-      enabled: true,
+      enabled: b.builtin, // built-ins on by default; other catalog tools opt-in per assistant
       description: b.description,
+      parameters: b.parameters as Prisma.InputJsonValue,
       serverUrl: toolsWebhookUrl(orgId),
       staticParams: { organization_id: orgId },
       syncStatus: "pending",

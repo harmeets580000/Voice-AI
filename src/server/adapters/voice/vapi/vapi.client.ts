@@ -18,7 +18,9 @@ export function getVapiClient(apiKey?: string): VapiClient {
   }
   if (!platformClient) {
     if (!env.VAPI_API_KEY) {
-      throw new Error("VAPI_API_KEY is not configured");
+      throw new Error(
+        "No Vapi API key available — set this organization's Vapi private key on its Vapi settings page and Save.",
+      );
     }
     platformClient = new VapiClient({
       token: env.VAPI_API_KEY,

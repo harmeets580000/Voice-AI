@@ -47,8 +47,13 @@ const TOOL_NAMES: ToolName[] = [
 function toolsUrl(baseUrl: string, orgId: string): string {
   return `${baseUrl}/api/webhook/voice/tools?organization_id=${encodeURIComponent(orgId)}`;
 }
-function callEndedUrl(baseUrl: string, orgId: string): string {
-  return `${baseUrl}/api/webhook/voice/call-ended?organization_id=${encodeURIComponent(orgId)}`;
+function callEndedUrl(baseUrl: string, orgId: string, assistantId?: string): string {
+  const url = `${baseUrl}/api/webhook/voice/call-ended?organization_id=${encodeURIComponent(orgId)}`;
+  // Each assistant has its own server.url, so we can bake our Assistant id in for
+  // per-assistant call attribution (the tools URL stays org-only — tool objects are shared).
+  return assistantId
+    ? `${url}&assistant_id=${encodeURIComponent(assistantId)}`
+    : url;
 }
 
 // The SDK request types are large and version-specific; we build plain request objects and
@@ -105,8 +110,13 @@ export class VapiVoiceProvider implements VoiceProvider {
       voice: input.assistant.voice
         ? { provider: "vapi", voiceId: input.assistant.voice }
         : undefined,
-      server: { url: callEndedUrl(baseUrl, input.organizationId) },
-      metadata: { organization_id: input.organizationId },
+      server: {
+        url: callEndedUrl(baseUrl, input.organizationId, input.assistantId),
+      },
+      metadata: {
+        organization_id: input.organizationId,
+        ...(input.assistantId ? { assistant_id: input.assistantId } : {}),
+      },
     };
     if (assistantId) {
       await client.assistants.update(assistantId, assistantBody);
@@ -259,6 +269,19 @@ export class VapiVoiceProvider implements VoiceProvider {
     return parseCallEnded(req);
   }
 
+  async listAssistants(input: { providerApiKey?: string }) {
+    const client = this.client(input.providerApiKey);
+    const list = await client.assistants.list({ limit: 100 });
+    const arr = Array.isArray(list) ? list : [];
+    return arr
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((a: any) => ({
+        assistantId: String(a.id ?? ""),
+        name: a.name ? String(a.name) : undefined,
+      }))
+      .filter((a) => a.assistantId);
+  }
+
   async listVoices(apiKey?: string) {
     // Best-effort live fetch from Vapi's voice-library; fall back to curated on any error.
     try {
@@ -335,6 +358,37 @@ export class VapiVoiceProvider implements VoiceProvider {
       }
     } catch (e) {
       logger.warn("pullOrgData: assistant fetch failed", { error: String(e) });
+    }
+
+    // Assistant tools (reflect Vapi -> portal). Read the assistant's toolIds, then resolve the
+    // tool objects from the account's tool list.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawA = snap.assistant?.raw as any;
+      const model = rawA?.model ?? {};
+      const toolIds: string[] = Array.isArray(model.toolIds)
+        ? model.toolIds.map(String)
+        : [];
+      if (toolIds.length) {
+        const list = await client.tools.list();
+        const arr = Array.isArray(list) ? list : [];
+        snap.tools = arr
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .filter((t: any) => toolIds.includes(String(t.id)))
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .map((t: any) => ({
+            id: String(t.id),
+            name: String(t.function?.name ?? t.name ?? ""),
+            description: t.function?.description
+              ? String(t.function.description)
+              : undefined,
+            parameters: t.function?.parameters,
+            serverUrl: t.server?.url ? String(t.server.url) : undefined,
+          }))
+          .filter((t) => t.id && t.name);
+      }
+    } catch (e) {
+      logger.warn("pullOrgData: tools fetch failed", { error: String(e) });
     }
 
     // Phone number.

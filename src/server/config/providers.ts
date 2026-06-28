@@ -8,8 +8,11 @@ import { env } from "@server/config/env";
 import type { VoiceProvider } from "@server/ports/voice-provider.port";
 import { VapiVoiceProvider } from "@server/adapters/voice/vapi/vapi.provider";
 import { FakeVoiceProvider } from "@server/adapters/voice/fake/fake.provider";
+import type { SimulatorLlm } from "@server/ports/simulator-llm.port";
+import { AnthropicSimulatorLlm } from "@server/adapters/llm/anthropic/anthropic.simulator";
 
 let voiceProvider: VoiceProvider | null = null;
+let simulatorLlm: SimulatorLlm | null = null;
 
 /** Returns the active VoiceProvider, selected by env.VOICE_PROVIDER. */
 export function getVoiceProvider(): VoiceProvider {
@@ -29,4 +32,15 @@ export function getVoiceProvider(): VoiceProvider {
 /** Test/seed hook to inject a specific provider (e.g. a configured FakeVoiceProvider). */
 export function setVoiceProvider(provider: VoiceProvider): void {
   voiceProvider = provider;
+}
+
+/** The active SimulatorLlm (Anthropic by default; the fake is injected in tests). */
+export function getSimulatorLlm(): SimulatorLlm {
+  if (!simulatorLlm) simulatorLlm = new AnthropicSimulatorLlm();
+  return simulatorLlm;
+}
+
+/** Test/dev hook to inject a specific simulator LLM (e.g. a scripted FakeSimulatorLlm). */
+export function setSimulatorLlm(llm: SimulatorLlm): void {
+  simulatorLlm = llm;
 }

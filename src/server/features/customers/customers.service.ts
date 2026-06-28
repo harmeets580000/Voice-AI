@@ -9,6 +9,26 @@ export async function findCustomerByPhone(orgId: string, phone: string) {
   return tenantDb(orgId).customer.findFirst({ where: { phone } });
 }
 
+export function getCustomer(orgId: string, id: string) {
+  return tenantDb(orgId).customer.findFirst({ where: { id } });
+}
+
+export async function updateCustomer(
+  orgId: string,
+  id: string,
+  input: { name?: string; phone?: string; email?: string; notes?: string },
+) {
+  const db = tenantDb(orgId);
+  const data: Record<string, unknown> = {};
+  if (input.name !== undefined) data.name = input.name;
+  if (input.phone !== undefined) data.phone = input.phone;
+  if (input.email !== undefined) data.email = input.email;
+  if (input.notes !== undefined) data.notes = input.notes;
+  const res = await db.customer.updateMany({ where: { id }, data });
+  if (res.count === 0) return null;
+  return db.customer.findFirst({ where: { id } });
+}
+
 export async function findOrCreateCustomer(
   orgId: string,
   input: { name?: string; phone?: string; email?: string },

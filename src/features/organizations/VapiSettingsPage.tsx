@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, RefreshCw, Zap, KeyRound, Bot, Phone } from "lucide-react";
+import { Save, RefreshCw, Zap, KeyRound, Bot, Phone, RotateCcw } from "lucide-react";
 import { api } from "@shared/api/client";
 import {
   PageHeader,
@@ -10,6 +10,7 @@ import {
   Button,
   Field,
   Input,
+  Select,
   Textarea,
   PasswordInput,
   Badge,
@@ -23,7 +24,18 @@ import type {
   TestKeyResponse,
   ProvisionResponse,
   VoiceOptionsResponse,
+  ToolsSyncResponse,
+  AssistantListResponse,
 } from "@contracts/vapi";
+
+type Tab = "connection" | "assistant" | "tools" | "status" | "history";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "connection", label: "Connection" },
+  { id: "assistant", label: "Assistant" },
+  { id: "tools", label: "Tools" },
+  { id: "status", label: "Status" },
+  { id: "history", label: "History" },
+];
 
 /**
  * Per-customer Vapi settings (super-admin only). The private key field is masked and the
@@ -33,6 +45,8 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [keyInput, setKeyInput] = useState("");
+  const [selectingAssistant, setSelectingAssistant] = useState(false);
+  const [tab, setTab] = useState<Tab>("connection");
   const [form, setForm] = useState({
     greeting: "",
     prompt: "",
@@ -49,6 +63,12 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
     queryFn: () => api.get<VoiceOptionsResponse>("/voice-options"),
     staleTime: 5 * 60_000,
   });
+  const assistantsQuery = useQuery({
+    queryKey: ["vapi-assistants", orgId],
+    queryFn: () =>
+      api.get<AssistantListResponse>(`/organizations/${orgId}/vapi/assistants`),
+    enabled: !!data?.settings?.hasCustomKey,
+  });
 
   useEffect(() => {
     if (data?.settings) {
@@ -64,7 +84,7 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
 
   const s = data?.settings;
 
-  async function onSave() {
+  async function onSave(): Promise<boolean> {
     try {
       await api.put<VapiSettingsResponse>(`/organizations/${orgId}/vapi`, {
         ...form,
@@ -73,8 +93,10 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
       setKeyInput("");
       await queryClient.invalidateQueries({ queryKey: ["vapi", orgId] });
       toast.success("Vapi settings saved");
+      return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Save failed");
+      return false;
     }
   }
 
@@ -85,7 +107,10 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
         { apiKey: keyInput },
       );
       if (res.valid) {
-        toast.success("Key valid — syncing from Vapi…");
+        toast.success("Key valid — saving & syncing from Vapi…");
+        // Persist the key first so the sync (and later provision) use it. With no platform
+        // key in .env, an unsaved key would leave the sync with nothing to authenticate with.
+        await onSave();
         await onSync();
       } else {
         toast.error(`Invalid: ${res.reason}`);
@@ -106,6 +131,39 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Provision failed");
     }
+  }
+
+  async function onSelectAssistant(assistantId: string) {
+    if (!assistantId || assistantId === s?.vapiAssistantId) return;
+    setSelectingAssistant(true);
+    try {
+      await api.put<VapiSettingsResponse>(
+        `/organizations/${orgId}/vapi/assistants`,
+        { assistantId },
+      );
+      await queryClient.invalidateQueries();
+      toast.success("Active assistant updated");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not switch assistant");
+    } finally {
+      setSelectingAssistant(false);
+    }
+  }
+
+  async function onSaveAndProvision() {
+    if (!(await onSave())) return;
+    await onProvision();
+    // Also push this org's tools (built-in + custom, enabled set) to Vapi.
+    try {
+      const res = await api.post<ToolsSyncResponse>(
+        `/organizations/${orgId}/tools/sync`,
+      );
+      if (res.syncError) toast.error(`Tools sync: ${res.syncError}`);
+      else toast.success("Tools synced to Vapi");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Tools sync failed");
+    }
+    await queryClient.invalidateQueries();
   }
 
   async function onSync() {
@@ -129,60 +187,142 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
     }
   }
 
+  async function onReset() {
+    if (
+      !window.confirm(
+        "Reset this org's Vapi data? Deletes its synced config, imported calls, tool links, and sync history. The saved API key is kept.",
+      )
+    )
+      return;
+    try {
+      await api.post<VapiSettingsResponse>(
+        `/organizations/${orgId}/vapi/reset`,
+      );
+      await queryClient.invalidateQueries();
+      toast.success("Vapi data reset — key kept");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Reset failed");
+    }
+  }
+
   return (
-    <div className="max-w-3xl space-y-5">
+    <div className="max-w-4xl space-y-5">
       <PageHeader
         title="Vapi settings"
         subtitle="Configure and inspect this customer's voice setup."
       />
 
-      {/* Read-only summary of what's currently synced from Vapi */}
-      <Card className="space-y-3">
+      <div role="tablist" className="flex flex-wrap gap-2 text-sm">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-lg px-3 py-1.5 transition-colors ${
+              tab === t.id
+                ? "bg-accent text-on-accent"
+                : "border border-control text-text hover:bg-surface"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Connection: the Vapi API key + connection-level actions */}
+      {tab === "connection" && (
+        <Card className="space-y-3">
         <div className="flex items-center gap-2">
-          <Bot size={18} className="text-accent" />
-          <h2 className="font-medium text-text">Assistant (synced from Vapi)</h2>
-          {s?.syncStatus && (
-            <Badge tone={s.syncStatus === "synced" ? "success" : "neutral"}>
-              {s.syncStatus}
-            </Badge>
-          )}
+          <KeyRound size={18} className="text-accent" />
+          <h2 className="font-medium text-text">Vapi API key</h2>
+          {s &&
+            (s.hasCustomKey ? (
+              <Badge tone="success">Configured · …{s.keyLast4}</Badge>
+            ) : (
+              <Badge tone="warning">Not configured</Badge>
+            ))}
         </div>
-
-        {/* Phone number, prominent */}
-        <div className="flex items-center gap-2 rounded-lg bg-accent-tint px-3 py-2">
-          <Phone size={16} className="text-accent" />
-          <span className="text-sm text-muted">Phone number</span>
-          <span className="ml-auto font-mono font-medium text-text">
-            {s?.vapiPhoneNumber ?? "Not provisioned yet"}
-          </span>
-        </div>
-
-        <div className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
-          <Row label="Voice" value={s?.voice} />
-          <Row label="LLM model" value={s?.llmModel} />
-          <Row label="Assistant id" value={s?.vapiAssistantId} mono />
-          <Row label="Knowledge base id" value={s?.vapiKnowledgeBaseId} mono />
-        </div>
-        <div className="space-y-1 text-sm">
-          <div className="text-muted">Greeting</div>
-          <div className="rounded-lg bg-surface px-3 py-2 text-text">
-            {s?.greeting || "—"}
-          </div>
-        </div>
-        <div className="space-y-1 text-sm">
-          <div className="text-muted">System prompt</div>
-          <div className="max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-surface px-3 py-2 text-text">
-            {s?.prompt || "—"}
-          </div>
-        </div>
-        <p className="text-xs text-faint">
-          Last synced: {s?.lastSyncedAt ?? "never"}. Edit below and Save to push changes,
-          or Sync from Vapi to pull the latest.
+        <p className="text-xs text-muted">
+          First step: this organization authenticates to Vapi with its own private key. Stored
+          encrypted — only the last 4 are ever shown. Test &amp; save it before provisioning or
+          syncing.
         </p>
-      </Card>
+        {s?.hasCustomKey && (
+          <p className="text-xs text-muted">
+            A key is already configured for this organization. Enter a new key below only to
+            replace it.
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <PasswordInput
+            aria-label="Vapi private key"
+            placeholder={
+              s?.hasCustomKey ? "Enter a new key to replace…" : "Vapi private key…"
+            }
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            className="w-72 font-mono"
+          />
+          <Button
+            onClick={onTestKey}
+            disabled={!keyInput}
+            leftIcon={<KeyRound size={16} />}
+            title="Validate this key against Vapi, then save it (encrypted) and pull any existing data for this org."
+          >
+            Test &amp; save key
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={onSync}
+            disabled={!s?.hasCustomKey}
+            leftIcon={<RefreshCw size={16} />}
+            title="Mirror this org's Vapi account into the portal — assistant config, phone, tools, and new calls. Vapi is the source of truth, so this overwrites the editable fields."
+          >
+            Sync from Vapi
+          </Button>
+          <Button
+            variant="dangerGhost"
+            onClick={onReset}
+            leftIcon={<RotateCcw size={16} />}
+            title="Delete everything Vapi-derived for this org (synced config, imported calls, tool links, sync history). Your saved API key is kept."
+          >
+            Reset Vapi data
+          </Button>
+        </div>
+        </Card>
+      )}
 
-      <Card className="space-y-3">
+      {/* Assistant: active-assistant selector + editable config */}
+      {tab === "assistant" && (
+        <Card className="space-y-3">
         <h2 className="font-medium text-text">Assistant</h2>
+        <p className="text-xs text-muted">
+          Vapi is the source of truth: these fields auto-reflect from Vapi every minute, so changes
+          made in the Vapi dashboard appear here (and overwrite unsaved edits). Edit here and Save to
+          push your changes to Vapi.
+        </p>
+        {s?.hasCustomKey && (
+          <Field label="Active assistant">
+            <Select
+              value={s?.vapiAssistantId ?? ""}
+              disabled={selectingAssistant || assistantsQuery.isLoading}
+              onChange={(e) => onSelectAssistant(e.target.value)}
+              title="Pick which assistant in this org's Vapi account is the active one. Selecting loads its config and links its calls."
+            >
+              <option value="">
+                {assistantsQuery.isLoading
+                  ? "Loading assistants…"
+                  : "— Select an assistant —"}
+              </option>
+              {assistantsQuery.data?.assistants.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name || a.id}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         <Field label="Greeting (first message)">
           <Input
             value={form.greeting}
@@ -210,87 +350,71 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
             options={opts?.models ?? []}
           />
         </div>
-      </Card>
-
-      <Card className="space-y-2">
-        <h2 className="font-medium text-text">Per-customer Vapi private key</h2>
-        <p className="text-xs text-muted">
-          Leave blank to use the platform key. If set, it&apos;s stored encrypted; only
-          the last 4 are ever shown. Current:{" "}
-          {s?.hasCustomKey ? (
-            <span className="font-mono text-text">…{s.keyLast4}</span>
-          ) : (
-            <span>platform key</span>
-          )}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <PasswordInput
-            aria-label="Vapi private key"
-            placeholder="sk_live_…"
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            className="w-72 font-mono"
-          />
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <Button
+            onClick={onSave}
+            leftIcon={<Save size={16} />}
+            title="Save these assistant settings to our database (and push them to the live Vapi assistant if this org is already provisioned)."
+          >
+            Save
+          </Button>
           <Button
             variant="secondary"
-            onClick={onTestKey}
-            disabled={!keyInput}
-            leftIcon={<KeyRound size={16} />}
+            onClick={onSaveAndProvision}
+            leftIcon={<Zap size={16} />}
+            title="Save the settings, then create/update this org's assistant and phone number in Vapi, and sync its enabled tools."
           >
-            Test key
+            {s?.vapiAssistantId
+              ? "Save & re-provision to Vapi"
+              : "Save & provision to Vapi"}
           </Button>
         </div>
-      </Card>
+        </Card>
+      )}
 
-      <Card className="space-y-1.5 text-sm">
+      {/* Tools: per-customer tools (built-in + custom), pushed on "Save & provision"
+          or via the Tools "Sync to Vapi" button. */}
+      {tab === "tools" && <ToolsManager orgId={orgId} />}
+
+      {/* Status: live mirror of what's provisioned in Vapi */}
+      {tab === "status" && (
+        <Card className="space-y-3 text-sm">
         <div className="mb-1 flex items-center gap-2">
-          <h2 className="font-medium text-text">Status &amp; identifiers</h2>
+          <Bot size={18} className="text-accent" />
+          <h2 className="font-medium text-text">Live Vapi status</h2>
           {s?.syncStatus && (
             <Badge tone={s.syncStatus === "synced" ? "success" : "neutral"}>
               {s.syncStatus}
             </Badge>
           )}
         </div>
-        <p className="mb-1 text-xs text-muted">
-          Mirrored from Vapi on Provision / Sync. Our database is the source of truth;
-          these ids link each record to its Vapi copy.
+
+        {/* Phone number, prominent */}
+        <div className="flex items-center gap-2 rounded-lg bg-accent-tint px-3 py-2">
+          <Phone size={16} className="text-accent" />
+          <span className="text-sm text-muted">Phone number</span>
+          <span className="ml-auto font-mono font-medium text-text">
+            {s?.vapiPhoneNumber ?? "Not provisioned yet"}
+          </span>
+        </div>
+
+        <p className="text-xs text-muted">
+          Mirrored from Vapi on Provision / Sync — our database is the source of truth; these ids
+          link each record to its Vapi copy.
         </p>
-        <Row label="Last synced" value={s?.lastSyncedAt} />
-        <Row label="Sync error" value={s?.syncError} />
         <Row label="Assistant id" value={s?.vapiAssistantId} mono />
-        <Row label="Phone number" value={s?.vapiPhoneNumber} mono />
         <Row label="Phone number id" value={s?.vapiPhoneNumberId} mono />
         <Row label="Knowledge base id" value={s?.vapiKnowledgeBaseId} mono />
         <Row label="Vapi org id" value={s?.vapiOrgId} mono />
+        <Row label="Last synced" value={s?.lastSyncedAt} />
+        <Row label="Sync error" value={s?.syncError} />
         <Row label="Tools webhook" value={s?.toolsWebhookUrl} mono />
         <Row label="Call-ended webhook" value={s?.callEndedWebhookUrl} mono />
       </Card>
+      )}
 
-      {/* Per-customer tools (built-in + custom), reconciled to Vapi */}
-      <ToolsManager orgId={orgId} />
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={onSave} leftIcon={<Save size={16} />}>
-          Save
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={onProvision}
-          leftIcon={<Zap size={16} />}
-        >
-          {s?.vapiAssistantId ? "Re-provision" : "Provision"}
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={onSync}
-          leftIcon={<RefreshCw size={16} />}
-        >
-          Sync from Vapi
-        </Button>
-      </div>
-
-      {/* Full sync history */}
-      <SyncHistory orgId={orgId} />
+      {/* History: every sync run for this org */}
+      {tab === "history" && <SyncHistory orgId={orgId} defaultOpen />}
     </div>
   );
 }

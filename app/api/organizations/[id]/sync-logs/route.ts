@@ -13,6 +13,6 @@ type Ctx = { params: Promise<{ id: string }> };
 export const GET = handleRoute(async (_req, ctx) => {
   await requireRole([Role.SUPER_ADMIN]);
   const { id } = await (ctx as Ctx).params;
-  const res: SyncLogListResponse = { logs: await listSyncLogs(id) };
+  const res: SyncLogListResponse = { logs: await listSyncLogs(id, 200) };
   return ok(res);
 });

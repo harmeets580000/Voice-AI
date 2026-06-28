@@ -2,11 +2,12 @@ import { tenantDb } from "@server/platform/db/scoped";
 
 export function listBookings(
   orgId: string,
-  filter?: { status?: string; from?: Date; to?: Date },
+  filter?: { status?: string; from?: Date; to?: Date; customerId?: string },
 ) {
   return tenantDb(orgId).booking.findMany({
     where: {
       ...(filter?.status ? { status: filter.status as never } : {}),
+      ...(filter?.customerId ? { customerId: filter.customerId } : {}),
       ...(filter?.from || filter?.to
         ? {
             startDatetime: {

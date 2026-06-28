@@ -29,14 +29,19 @@ function hashOrg(orgId: string): number {
   for (const c of orgId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return h;
 }
-/** Deterministic, per-org E.164 (vapiPhoneNumber is @unique; same org → same number). */
-function fakePhone(orgId: string): string {
-  return "+1555" + String((hashOrg(orgId) % 9_000_000) + 1_000_000);
+/**
+ * Deterministic, unique E.164. Keyed by org (and our assistant id when multi-assistant) so
+ * different orgs/assistants never collide on the @unique provider phone number.
+ */
+function fakePhone(orgId: string, assistantId?: string): string {
+  const seed = hashOrg(assistantId ? `${orgId}:${assistantId}` : orgId);
+  return "+1555" + String((seed % 9_000_000) + 1_000_000);
 }
-/** Deterministic, per-org assistant id so different orgs never share ids (their calls
+/** Deterministic assistant id so different orgs/assistants never share ids (their calls
  *  derive from it, and vapiCallId is globally @unique). */
-function fakeAssistantId(orgId: string): string {
-  return `asst_fake_${hashOrg(orgId).toString(36)}`;
+function fakeAssistantId(orgId: string, assistantId?: string): string {
+  const seed = hashOrg(assistantId ? `${orgId}:${assistantId}` : orgId);
+  return `asst_fake_${seed.toString(36)}`;
 }
 
 export interface FakeProviderOptions {
@@ -65,8 +70,11 @@ export class FakeVoiceProvider implements VoiceProvider {
     }
     return {
       assistantId:
-        input.existing?.assistantId ?? fakeAssistantId(input.organizationId),
-      phoneNumber: input.existing?.phoneNumber ?? fakePhone(input.organizationId),
+        input.existing?.assistantId ??
+        fakeAssistantId(input.organizationId, input.assistantId),
+      phoneNumber:
+        input.existing?.phoneNumber ??
+        fakePhone(input.organizationId, input.assistantId),
       phoneNumberId: input.existing?.phoneNumberId ?? id("pn"),
       knowledgeBaseId: input.existing?.knowledgeBaseId ?? id("kb"),
       toolIds: [
@@ -140,6 +148,14 @@ export class FakeVoiceProvider implements VoiceProvider {
     } as NormalizedCallRecord;
   }
 
+  async listAssistants(input: { providerApiKey?: string }) {
+    this.record("listAssistants", input);
+    return [
+      { assistantId: "asst_fake_1", name: "Receptionist A" },
+      { assistantId: "asst_fake_2", name: "Receptionist B" },
+    ];
+  }
+
   async listVoices() {
     return CURATED_VOICES;
   }
@@ -202,6 +218,18 @@ export class FakeVoiceProvider implements VoiceProvider {
       },
       knowledgeBaseId: id("kb"),
       providerOrgId: id("org"),
+      tools: [
+        {
+          id: `tool_${input.organizationId}_check`,
+          name: ToolName.CHECK_AVAILABILITY,
+          description: "Check open slots",
+        },
+        {
+          id: `tool_${input.organizationId}_book`,
+          name: ToolName.BOOK_APPOINTMENT,
+          description: "Book an appointment",
+        },
+      ],
       calls: [
         {
           organizationId: input.organizationId,

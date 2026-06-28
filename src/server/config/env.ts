@@ -35,12 +35,24 @@ const EnvSchema = z.object({
   VAPI_BASE_URL: z.string().default("https://api.vapi.ai"),
   PUBLIC_API_BASE_URL: z.string().default("http://localhost:3000"),
 
+  // Simulator LLM (Anthropic). Powers the per-assistant text-chat tester (Claude tool loop).
+  ANTHROPIC_API_KEY: z.string().default(""),
+  SIMULATOR_MODEL: z.string().default("claude-opus-4-8"),
+
   // App
   PORT: z.coerce.number().default(3000),
   WEB_ORIGIN: z.string().default("http://localhost:3000"),
 
   // Which adapter implements each port (lets us swap Vapi -> Retell later).
   VOICE_PROVIDER: z.enum(["vapi", "fake"]).default("vapi"),
+
+  // Background auto-sync of Vapi calls (in-process poller; see instrumentation.ts).
+  // NOTE: do NOT use z.coerce.boolean — Boolean("false") is true. Parse the string explicitly.
+  AUTO_SYNC_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  AUTO_SYNC_INTERVAL_SECONDS: z.coerce.number().default(60),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

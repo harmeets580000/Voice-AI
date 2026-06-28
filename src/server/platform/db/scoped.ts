@@ -32,6 +32,9 @@ export const CUSTOMER_DATA_MODELS = new Set<string>([
   "Reminder",
   "OrgVapiConfig",
   "OrgTheme",
+  "Assistant",
+  "AssistantTool",
+  "AssistantKnowledgeFile",
 ]);
 
 type AnyArgs = Record<string, unknown> & {
