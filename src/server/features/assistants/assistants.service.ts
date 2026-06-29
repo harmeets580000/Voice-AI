@@ -29,12 +29,16 @@ type AssistantRow = Prisma.AssistantGetPayload<{
   include: {
     tools: { select: { toolId: true } };
     knowledgeFiles: { select: { fileId: true } };
+    services: { select: { serviceId: true } };
+    staff: { select: { staffId: true } };
   };
 }>;
 
 const ASSISTANT_INCLUDE = {
   tools: { select: { toolId: true } },
   knowledgeFiles: { select: { fileId: true } },
+  services: { select: { serviceId: true } },
+  staff: { select: { staffId: true } },
 } as const;
 
 function toAssistantDTO(a: AssistantRow): AssistantDTO {
@@ -56,6 +60,8 @@ function toAssistantDTO(a: AssistantRow): AssistantDTO {
     syncError: a.syncError,
     selectedToolIds: a.tools.map((t) => t.toolId),
     selectedKnowledgeFileIds: a.knowledgeFiles.map((f) => f.fileId),
+    selectedServiceIds: a.services.map((s) => s.serviceId),
+    selectedStaffIds: a.staff.map((s) => s.staffId),
     createdAt: a.createdAt.toISOString(),
   };
 }
@@ -66,7 +72,18 @@ async function resolveProviderKey(orgId: string): Promise<string | undefined> {
     where: { organizationId: orgId },
     select: { vapiPrivateKeyEnc: true },
   });
-  if (cfg?.vapiPrivateKeyEnc) return decryptSecret(cfg.vapiPrivateKeyEnc);
+  if (cfg?.vapiPrivateKeyEnc) {
+    try {
+      return decryptSecret(cfg.vapiPrivateKeyEnc);
+    } catch (e) {
+      // A corrupt/wrong-key credential must not 500 the caller — fall back to the platform key.
+      logger.warn("resolveProviderKey: stored key could not be decrypted", {
+        orgId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return undefined;
+    }
+  }
   return undefined;
 }
 
@@ -128,6 +145,21 @@ export async function createAssistant(
   return getAssistant(orgId, created.id);
 }
 
+/**
+ * Create an assistant AND provision it in the provider (Vapi assistant + phone + tools) so a portal
+ * "Add" produces the same record on both sides. Provisioning is best-effort — the local row is always
+ * kept; its `syncStatus`/`syncError` reflect the outcome, and the detail page's Provision button retries.
+ */
+export async function createAndProvisionAssistant(
+  orgId: string,
+  input: CreateAssistantInput,
+  triggeredBy?: string,
+): Promise<AssistantDTO> {
+  const created = await createAssistant(orgId, input);
+  await provisionAssistant(orgId, created.id, triggeredBy);
+  return getAssistant(orgId, created.id);
+}
+
 /** Adopt an existing provider assistant as a new Assistant row, pulling its config. */
 export async function importAssistant(
   orgId: string,
@@ -181,6 +213,51 @@ export async function importAssistant(
   return getAssistant(orgId, created.id);
 }
 
+/**
+ * Reflect EVERY assistant in the org's Vapi account into the portal `Assistant` table so they all
+ * appear on /assistants. Imports any account assistant we don't already have (keyed on
+ * providerAssistantId); existing rows are left untouched. Best-effort per assistant — a single
+ * failure (or no key) never throws. Returns how many new rows were created.
+ */
+export async function reflectAssistantsFromVapi(
+  orgId: string,
+): Promise<{ created: number }> {
+  const db = tenantDb(orgId);
+  let summaries: { assistantId: string; name?: string }[];
+  try {
+    summaries = await getVoiceProvider().listAssistants({
+      providerApiKey: await resolveProviderKey(orgId),
+    });
+  } catch (e) {
+    logger.warn("reflectAssistantsFromVapi: listAssistants failed", {
+      orgId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return { created: 0 };
+  }
+
+  let created = 0;
+  for (const s of summaries) {
+    if (!s.assistantId) continue;
+    const exists = await db.assistant.findFirst({
+      where: { providerAssistantId: s.assistantId },
+      select: { id: true },
+    });
+    if (exists) continue;
+    try {
+      await importAssistant(orgId, s.assistantId, s.name);
+      created++;
+    } catch (e) {
+      logger.warn("reflectAssistantsFromVapi: import failed", {
+        orgId,
+        assistantId: s.assistantId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return { created };
+}
+
 /** The org's default assistant, creating one if the org has none yet. */
 export async function getOrCreateDefaultAssistant(orgId: string, name?: string) {
   const db = tenantDb(orgId);
@@ -218,6 +295,7 @@ export async function updateAssistantConfig(
       await getVoiceProvider().updateAssistant({
         organizationId: orgId,
         assistantId: assistant.providerAssistantId,
+        name: input.name ?? undefined,
         greeting: input.greeting ?? undefined,
         prompt: input.prompt ?? undefined,
         voice: input.voice ?? undefined,
@@ -336,6 +414,97 @@ export async function setAssistantKnowledge(
   return getAssistant(orgId, assistantId);
 }
 
+/** Replace this assistant's selected services with `serviceIds` (org-library Service ids). */
+export async function setAssistantServices(
+  orgId: string,
+  assistantId: string,
+  serviceIds: string[],
+) {
+  const db = tenantDb(orgId);
+  const assistant = await db.assistant.findFirst({ where: { id: assistantId } });
+  if (!assistant) throw AppError.notFound("Assistant not found");
+
+  const valid = await db.service.findMany({
+    where: { id: { in: serviceIds } },
+    select: { id: true },
+  });
+  const validIds = new Set(valid.map((s) => s.id));
+  for (const id of serviceIds) {
+    if (!validIds.has(id)) throw AppError.badRequest(`Unknown service: ${id}`);
+  }
+
+  await db.assistantService.deleteMany({ where: { assistantId } });
+  if (serviceIds.length > 0) {
+    await db.assistantService.createMany({
+      data: serviceIds.map((serviceId) => ({ organizationId: orgId, assistantId, serviceId })),
+      skipDuplicates: true,
+    });
+  }
+  return getAssistant(orgId, assistantId);
+}
+
+/** Replace this assistant's selected staff with `staffIds` (org-library Staff ids). */
+export async function setAssistantStaff(
+  orgId: string,
+  assistantId: string,
+  staffIds: string[],
+) {
+  const db = tenantDb(orgId);
+  const assistant = await db.assistant.findFirst({ where: { id: assistantId } });
+  if (!assistant) throw AppError.notFound("Assistant not found");
+
+  const valid = await db.staff.findMany({
+    where: { id: { in: staffIds } },
+    select: { id: true },
+  });
+  const validIds = new Set(valid.map((s) => s.id));
+  for (const id of staffIds) {
+    if (!validIds.has(id)) throw AppError.badRequest(`Unknown staff: ${id}`);
+  }
+
+  await db.assistantStaff.deleteMany({ where: { assistantId } });
+  if (staffIds.length > 0) {
+    await db.assistantStaff.createMany({
+      data: staffIds.map((staffId) => ({ organizationId: orgId, assistantId, staffId })),
+      skipDuplicates: true,
+    });
+  }
+  return getAssistant(orgId, assistantId);
+}
+
+/**
+ * The assistant's selected service & staff ids for runtime scoping. A `null` dimension means the
+ * assistant has NO selection there → "offer all" (no restriction). `assistantId` null (call not
+ * attributed to a known assistant) → fully unrestricted.
+ */
+export async function getAssistantScope(
+  orgId: string,
+  assistantId: string | null,
+): Promise<{ serviceIds: string[] | null; staffIds: string[] | null }> {
+  if (!assistantId) return { serviceIds: null, staffIds: null };
+  const db = tenantDb(orgId);
+  const [services, staff] = await Promise.all([
+    db.assistantService.findMany({ where: { assistantId }, select: { serviceId: true } }),
+    db.assistantStaff.findMany({ where: { assistantId }, select: { staffId: true } }),
+  ]);
+  return {
+    serviceIds: services.length > 0 ? services.map((s) => s.serviceId) : null,
+    staffIds: staff.length > 0 ? staff.map((s) => s.staffId) : null,
+  };
+}
+
+/** Map a provider assistant id back to our Assistant.id (for the org-only tool webhook). */
+export async function resolveAssistantIdByProviderId(
+  orgId: string,
+  providerAssistantId: string,
+): Promise<string | null> {
+  const a = await tenantDb(orgId).assistant.findFirst({
+    where: { providerAssistantId },
+    select: { id: true },
+  });
+  return a?.id ?? null;
+}
+
 /**
  * Provision (idempotent) this assistant's voice resources: create/reuse a provider assistant +
  * phone number with our Assistant id baked into the call-ended webhook, mirror every id back,
@@ -367,6 +536,7 @@ export async function provisionAssistant(
       publicApiBaseUrl: env.PUBLIC_API_BASE_URL,
       providerApiKey,
       assistant: {
+        name: assistant.name,
         greeting: assistant.greeting ?? undefined,
         prompt: assistant.prompt ?? undefined,
         voice: assistant.voice ?? undefined,
@@ -387,7 +557,7 @@ export async function provisionAssistant(
       where: { id: assistantId },
       data: {
         providerAssistantId: result.assistantId,
-        providerPhoneNumberId: result.phoneNumberId,
+        providerPhoneNumberId: result.phoneNumberId ?? null,
         providerPhoneNumber: result.phoneNumber || null,
         providerKnowledgeBaseId: result.knowledgeBaseId ?? null,
         syncStatus: "synced",

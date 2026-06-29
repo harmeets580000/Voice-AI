@@ -20,25 +20,25 @@ import {
 } from "@features/help/helpContent";
 
 const CALL_FLOW: { icon: LucideIcon; title: string; desc: string }[] = [
-  { icon: PhoneIncoming, title: "Caller dials", desc: "Your org's number" },
-  { icon: Bot, title: "Vapi answers", desc: "AI receptionist talks" },
+  { icon: PhoneIncoming, title: "Caller dials", desc: "An assistant's number" },
+  { icon: Bot, title: "Assistant answers", desc: "Its greeting + voice" },
   { icon: Wrench, title: "Tools run", desc: "Check · Book · Lookup" },
   { icon: CalendarCheck, title: "Booking saved", desc: "Free staff auto-assigned" },
   { icon: FileText, title: "Call logged", desc: "Transcript + summary" },
 ];
 
 const ORG_STEPS = [
-  { title: "Add staff", desc: "The people who take appointments." },
-  { title: "Add services", desc: "What you offer and how long each takes." },
+  { title: "Add services & staff", desc: "What you offer and who delivers it." },
   { title: "Set schedules", desc: "Weekly hours + any time off." },
-  { title: "Upload knowledge", desc: "Docs the assistant answers from." },
+  { title: "Create an assistant", desc: "Greeting, prompt, voice, model." },
+  { title: "Scope it", desc: "Pick its services, staff, knowledge, tools." },
 ];
 
 const SUPER_STEPS = [
-  { title: "Create organization", desc: "Onboard a new customer." },
-  { title: "Open Vapi settings", desc: "Greeting, prompt, voice, model." },
-  { title: "Add/validate key", desc: "Optional per-customer private key." },
-  { title: "Provision", desc: "Create assistant, number, tools." },
+  { title: "Create organization", desc: "Onboard a customer (Vapi Settings)." },
+  { title: "Add Vapi key", desc: "Per-customer private key (optional)." },
+  { title: "Add an assistant", desc: "Created in Vapi: assistant, number, tools." },
+  { title: "Configure it", desc: "Services, staff, knowledge, tools." },
   { title: "Upload knowledge", desc: "So the assistant can answer." },
 ];
 
@@ -59,13 +59,13 @@ function HelpPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="How to use this platform"
-        subtitle="A quick visual guide, then step-by-step details."
+        title="How inbound calls work"
+        subtitle="A quick visual guide to the call flow, then step-by-step setup."
       />
 
       <Card className="mb-5">
         <h2 className="mb-4 font-display font-semibold text-text">
-          How a call works
+          How an inbound call works
         </h2>
         <div className="flex flex-wrap items-stretch gap-2">
           {CALL_FLOW.map((s, i) => (

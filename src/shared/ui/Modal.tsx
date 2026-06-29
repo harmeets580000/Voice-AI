@@ -20,7 +20,7 @@ export function Modal({
   title: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
 }) {
   useEffect(() => {
     if (!open) return;
@@ -38,7 +38,13 @@ export function Modal({
   if (!open) return null;
 
   const width =
-    size === "lg" ? "max-w-2xl" : size === "sm" ? "max-w-sm" : "max-w-lg";
+    size === "xl"
+      ? "max-w-4xl"
+      : size === "lg"
+        ? "max-w-2xl"
+        : size === "sm"
+          ? "max-w-sm"
+          : "max-w-lg";
 
   return (
     <div

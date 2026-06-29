@@ -97,7 +97,7 @@ export class VapiVoiceProvider implements VoiceProvider {
     // 3) Assistant (attach tools, set end-of-call webhook + org metadata).
     let assistantId = existing.assistantId;
     const assistantBody = {
-      name: input.organizationName,
+      name: input.assistant.name || input.organizationName,
       firstMessage: input.assistant.greeting,
       model: {
         provider: "openai",
@@ -125,22 +125,38 @@ export class VapiVoiceProvider implements VoiceProvider {
       assistantId = String(created.id);
     }
 
-    // 4) Phone number (attach to assistant).
+    // 4) Phone number (attach to assistant) — BEST EFFORT. Vapi requires a desired area code to buy
+    // a free number; if VAPI_DEFAULT_AREA_CODE isn't set (or the purchase fails / none available),
+    // create the assistant WITHOUT a number rather than failing the whole provision. A number can be
+    // provisioned later once an area code (or imported number) is available.
     let phoneNumberId = existing.phoneNumberId;
     let phoneNumber = existing.phoneNumber;
-    if (!phoneNumberId) {
-      const created = await client.phoneNumbers.create({
-        provider: "vapi",
-        assistantId,
-      });
-      phoneNumberId = String(created.id);
-      phoneNumber = String(created.number ?? phoneNumber ?? "");
+    const areaCode = env.VAPI_DEFAULT_AREA_CODE?.trim();
+    if (!phoneNumberId && areaCode) {
+      try {
+        const created = await client.phoneNumbers.create({
+          provider: "vapi",
+          assistantId,
+          numberDesiredAreaCode: areaCode,
+        });
+        phoneNumberId = String(created.id);
+        phoneNumber = String(created.number ?? phoneNumber ?? "");
+      } catch (e) {
+        logger.warn(
+          "Vapi: could not buy a phone number; assistant created without one",
+          {
+            organizationId: input.organizationId,
+            areaCode,
+            error: e instanceof Error ? e.message : String(e),
+          },
+        );
+      }
     }
 
     return {
       assistantId: assistantId!,
-      phoneNumber: phoneNumber ?? "",
-      phoneNumberId: phoneNumberId!,
+      phoneNumber,
+      phoneNumberId,
       knowledgeBaseId,
       toolIds,
       providerOrgId: existing.providerOrgId,
@@ -154,6 +170,7 @@ export class VapiVoiceProvider implements VoiceProvider {
     // sub-fields are dropped on serialization so unrelated config isn't clobbered.
     const includeModel = !!(input.llmModel || input.prompt || input.toolIds);
     const body = {
+      name: input.name,
       firstMessage: input.greeting,
       model: includeModel
         ? {

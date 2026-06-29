@@ -109,7 +109,7 @@ function CallsPage() {
         open={!!openId}
         onClose={() => setOpenId(null)}
         title="Call details"
-        size="lg"
+        size="xl"
       >
         {detail?.call ? (
           <div className="space-y-4">

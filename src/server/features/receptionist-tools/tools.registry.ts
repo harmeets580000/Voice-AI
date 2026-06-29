@@ -78,6 +78,21 @@ async function resolveServiceId(
 
 const price = (p: { toString(): string } | null) => (p != null ? Number(p) : null);
 
+/**
+ * Per-assistant runtime scope. A `null` dimension means "no restriction" (offer all). Resolved by
+ * the caller (the tool webhook / simulator) from the calling assistant's selections and threaded in,
+ * so the registry never imports the assistants feature (avoids an import cycle).
+ */
+export interface AssistantScope {
+  serviceIds: string[] | null;
+  staffIds: string[] | null;
+}
+
+/** Does this scope allow the given service id? (no restriction when serviceIds is null) */
+function serviceAllowed(scope: AssistantScope | null | undefined, serviceId: string): boolean {
+  return !scope?.serviceIds || scope.serviceIds.includes(serviceId);
+}
+
 export interface ToolEntry {
   name: ToolName;
   group: ToolGroup;
@@ -86,7 +101,11 @@ export interface ToolEntry {
   builtin: boolean;
   description: string;
   parameters: Json;
-  handler: (orgId: string, args: unknown) => Promise<unknown>;
+  handler: (
+    orgId: string,
+    args: unknown,
+    scope?: AssistantScope | null,
+  ) => Promise<unknown>;
 }
 
 export const TOOL_REGISTRY: Record<string, ToolEntry> = {
@@ -106,11 +125,13 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       },
       ["date"],
     ),
-    handler: async (orgId, raw) => {
+    handler: async (orgId, raw, scope) => {
       const a = CheckAvailabilityArgs.parse(raw);
       const serviceId = await resolveServiceId(orgId, a);
-      if (!serviceId) return { available: false, slots: [], message: SERVICE_NEEDED };
-      const slots = await getAvailability(orgId, serviceId, a.date);
+      if (!serviceId || !serviceAllowed(scope, serviceId)) {
+        return { available: false, slots: [], message: SERVICE_NEEDED };
+      }
+      const slots = await getAvailability(orgId, serviceId, a.date, scope?.staffIds);
       return {
         available: slots.length > 0,
         slots: slots.map((s) => ({
@@ -142,10 +163,12 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       },
       ["startDatetime"],
     ),
-    handler: async (orgId, raw) => {
+    handler: async (orgId, raw, scope) => {
       const a = BookAppointmentArgs.parse(raw);
       const serviceId = await resolveServiceId(orgId, a);
-      if (!serviceId) return { booked: false, message: SERVICE_NEEDED };
+      if (!serviceId || !serviceAllowed(scope, serviceId)) {
+        return { booked: false, message: SERVICE_NEEDED };
+      }
       const customer = await findOrCreateCustomer(orgId, {
         name: a.customerName,
         phone: a.customerPhone,
@@ -157,6 +180,7 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
           customerId: customer.id,
           notes: a.notes,
           source: "phone",
+          allowedStaffIds: scope?.staffIds,
         });
         return {
           booked: true,
@@ -421,8 +445,10 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
     description:
       "List the services this business offers (name, duration, price). Use this to map what the caller asks for to a bookable service.",
     parameters: obj({}),
-    handler: async (orgId) => {
-      const services = await listServices(orgId);
+    handler: async (orgId, _raw, scope) => {
+      const services = (await listServices(orgId)).filter(
+        (s) => !scope?.serviceIds || scope.serviceIds.includes(s.id),
+      );
       return {
         count: services.length,
         services: services.map((s) => ({
@@ -472,13 +498,13 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
     builtin: false,
     description: "List the active staff members who can deliver services.",
     parameters: obj({}),
-    handler: async (orgId) => {
-      const staff = await listStaff(orgId);
+    handler: async (orgId, _raw, scope) => {
+      const staff = (await listStaff(orgId)).filter(
+        (s) => s.isActive && (!scope?.staffIds || scope.staffIds.includes(s.id)),
+      );
       return {
-        count: staff.filter((s) => s.isActive).length,
-        staff: staff
-          .filter((s) => s.isActive)
-          .map((s) => ({ id: s.id, name: s.name, title: s.title })),
+        count: staff.length,
+        staff: staff.map((s) => ({ id: s.id, name: s.name, title: s.title })),
       };
     },
   },
@@ -497,11 +523,13 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       },
       ["date"],
     ),
-    handler: async (orgId, raw) => {
+    handler: async (orgId, raw, scope) => {
       const a = GetStaffAvailabilityArgs.parse(raw);
       const serviceId = await resolveServiceId(orgId, a);
-      if (!serviceId) return { available: false, slots: [], message: SERVICE_NEEDED };
-      const slots = await getAvailability(orgId, serviceId, a.date);
+      if (!serviceId || !serviceAllowed(scope, serviceId)) {
+        return { available: false, slots: [], message: SERVICE_NEEDED };
+      }
+      const slots = await getAvailability(orgId, serviceId, a.date, scope?.staffIds);
       return {
         date: a.date,
         slots: slots.map((s) => ({
@@ -514,15 +542,20 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
   },
 };
 
-/** Dispatch a normalized tool call to the right tool. Scoped to the given org. */
+/**
+ * Dispatch a normalized tool call to the right tool. Scoped to the given org; `scope` (the calling
+ * assistant's selected services/staff, or null for no restriction) narrows booking/service/staff
+ * tools to that assistant.
+ */
 export async function runTool(
   orgId: string,
+  scope: AssistantScope | null,
   toolName: string,
   args: unknown,
 ): Promise<unknown> {
   const entry = TOOL_REGISTRY[toolName];
   if (!entry) throw AppError.badRequest(`Unknown tool: ${toolName}`);
-  return entry.handler(orgId, args);
+  return entry.handler(orgId, args, scope);
 }
 
 /** Definition shape pushed to the voice provider (name + description + JSON-schema params). */

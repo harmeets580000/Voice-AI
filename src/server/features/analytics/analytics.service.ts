@@ -123,6 +123,7 @@ export async function getOrgDashboard(
     upcomingRows,
     recentCallRows,
     cfg,
+    defaultAssistant,
   ] = await Promise.all([
     db.booking.findMany({
       where: { createdAt: { gte: from, lt: to } },
@@ -173,6 +174,10 @@ export async function getOrgDashboard(
       },
     }),
     prisma.orgVapiConfig.findUnique({ where: { organizationId: orgId } }),
+    db.assistant.findFirst({
+      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      select: { providerAssistantId: true, providerPhoneNumber: true },
+    }),
   ]);
 
   const callsCount = calls.length;
@@ -302,9 +307,9 @@ export async function getOrgDashboard(
       summary: c.summary ?? null,
     })),
     vapiHealth: {
-      provisioned: !!cfg?.vapiAssistantId,
-      phoneNumber: cfg?.vapiPhoneNumber ?? null,
-      assistantId: cfg?.vapiAssistantId ?? null,
+      provisioned: !!defaultAssistant?.providerAssistantId,
+      phoneNumber: defaultAssistant?.providerPhoneNumber ?? null,
+      assistantId: defaultAssistant?.providerAssistantId ?? null,
       syncStatus: cfg?.syncStatus ?? null,
       lastSyncedAt: cfg?.lastSyncedAt?.toISOString() ?? null,
       syncError: cfg?.syncError ?? null,

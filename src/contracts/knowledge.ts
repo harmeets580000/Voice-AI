@@ -16,6 +16,8 @@ export const DocumentDTO = z.object({
   sizeBytes: z.number().nullable(),
   uploadedAt: z.string(),
   syncStatus: z.enum(["pending", "synced", "failed", "stale"]).nullable(),
+  /** The working-copy KnowledgeBaseFile id — what an assistant selects (null if not synced yet). */
+  knowledgeFileId: z.string().nullable(),
 });
 export type DocumentDTO = z.infer<typeof DocumentDTO>;
 

@@ -25,6 +25,8 @@ export const AssistantDTO = z.object({
   syncError: z.string().nullable(),
   selectedToolIds: z.array(z.string()),
   selectedKnowledgeFileIds: z.array(z.string()),
+  selectedServiceIds: z.array(z.string()),
+  selectedStaffIds: z.array(z.string()),
   createdAt: z.string(),
 });
 export type AssistantDTO = z.infer<typeof AssistantDTO>;
@@ -68,6 +70,18 @@ export const SetAssistantKnowledgeRequest = z.object({
 export type SetAssistantKnowledgeRequest = z.infer<
   typeof SetAssistantKnowledgeRequest
 >;
+
+export const SetAssistantServicesRequest = z.object({
+  serviceIds: z.array(z.string()),
+});
+export type SetAssistantServicesRequest = z.infer<
+  typeof SetAssistantServicesRequest
+>;
+
+export const SetAssistantStaffRequest = z.object({
+  staffIds: z.array(z.string()),
+});
+export type SetAssistantStaffRequest = z.infer<typeof SetAssistantStaffRequest>;
 
 /** A selectable tool in the org-level catalog (for the Tools page / per-assistant dropdown). */
 export const ToolCatalogItem = z.object({

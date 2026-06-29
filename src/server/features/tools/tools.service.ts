@@ -203,11 +203,13 @@ export async function reconcileOrganizationTools(
   if (!org) throw AppError.notFound("Organization not found");
   await ensureBuiltinTools(orgId);
 
-  const cfg = await prisma.orgVapiConfig.findUnique({
-    where: { organizationId: orgId },
-  });
   const providerApiKey = await resolveProviderKey(orgId);
   const provider = getVoiceProvider();
+  // Per-assistant provider id + config live on the default Assistant now.
+  const def = await prisma.assistant.findFirst({
+    where: { organizationId: orgId },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+  });
   const tools = await prisma.vapiTool.findMany({
     where: { organizationId: orgId },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
@@ -297,9 +299,9 @@ export async function reconcileOrganizationTools(
     }
   }
 
-  // Attach the currently-enabled tools to the assistant (best-effort).
+  // Attach the currently-enabled tools to the default assistant (best-effort).
   let attachError: string | null = null;
-  if (cfg?.vapiAssistantId) {
+  if (def?.providerAssistantId) {
     const enabled = await prisma.vapiTool.findMany({
       where: { organizationId: orgId, enabled: true, vapiToolId: { not: null } },
       select: { vapiToolId: true },
@@ -310,11 +312,11 @@ export async function reconcileOrganizationTools(
     try {
       await provider.updateAssistant({
         organizationId: orgId,
-        assistantId: cfg.vapiAssistantId,
-        greeting: cfg.greeting ?? undefined,
-        prompt: cfg.prompt ?? undefined,
-        voice: cfg.voice ?? undefined,
-        llmModel: cfg.llmModel ?? undefined,
+        assistantId: def.providerAssistantId,
+        greeting: def.greeting ?? undefined,
+        prompt: def.prompt ?? undefined,
+        voice: def.voice ?? undefined,
+        llmModel: def.llmModel ?? undefined,
         toolIds: enabledIds,
         providerApiKey,
       });

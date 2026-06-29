@@ -23,11 +23,16 @@ describe.skipIf(!hasTestDb)("provisioning + credentials (I-PROV, I-SEC)", () => 
     const result = await provisionOrganization(org.id);
     expect(result.syncStatus).toBe("synced");
 
+    // Per-assistant Vapi ids live on the default Assistant; OrgVapiConfig tracks org-level status.
+    const assistant = await prisma.assistant.findFirst({
+      where: { organizationId: org.id },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+    });
+    expect(assistant?.providerAssistantId).toBeTruthy();
+    expect(assistant?.providerPhoneNumber).toBeTruthy();
     const cfg = await prisma.orgVapiConfig.findUnique({
       where: { organizationId: org.id },
     });
-    expect(cfg?.vapiAssistantId).toBeTruthy();
-    expect(cfg?.vapiPhoneNumber).toBeTruthy();
     expect(cfg?.syncStatus).toBe("synced");
 
     const tools = await prisma.vapiTool.findMany({ where: { organizationId: org.id } });
@@ -49,15 +54,16 @@ describe.skipIf(!hasTestDb)("provisioning + credentials (I-PROV, I-SEC)", () => 
 
   it("I-PROV-03: re-running provision reuses ids (idempotent, no duplicate tools)", async () => {
     const org = await createOrg();
+    const defaultAssistant = () =>
+      prisma.assistant.findFirst({
+        where: { organizationId: org.id },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      });
     await provisionOrganization(org.id);
-    const first = await prisma.orgVapiConfig.findUnique({
-      where: { organizationId: org.id },
-    });
+    const first = await defaultAssistant();
     await provisionOrganization(org.id);
-    const second = await prisma.orgVapiConfig.findUnique({
-      where: { organizationId: org.id },
-    });
-    expect(second?.vapiAssistantId).toBe(first?.vapiAssistantId);
+    const second = await defaultAssistant();
+    expect(second?.providerAssistantId).toBe(first?.providerAssistantId);
     const tools = await prisma.vapiTool.findMany({ where: { organizationId: org.id } });
     expect(tools).toHaveLength(3); // still 3, not 6
   });

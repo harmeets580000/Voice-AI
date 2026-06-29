@@ -3,6 +3,7 @@ import { hasTestDb, truncateAll, disconnect, prisma } from "./helpers/db";
 import { createOrg } from "./helpers/factories";
 import { setVoiceProvider } from "@server/config/providers";
 import { FakeVoiceProvider } from "@server/adapters/voice/fake/fake.provider";
+import { encryptSecret } from "@server/platform/crypto/secretBox";
 import {
   syncOrganizationFromVapi,
   getVapiSettings,
@@ -10,6 +11,20 @@ import {
   reflectAllOrgsFromVapi,
 } from "@server/features/organizations/organizations.service";
 import { reconcileOrganizationTools } from "@server/features/tools/tools.service";
+
+/** Per-assistant Vapi data lives on the Assistant table now; seed/read the org's default there. */
+const createDefaultAssistant = (
+  orgId: string,
+  data: Record<string, unknown> = {},
+) =>
+  prisma.assistant.create({
+    data: { organizationId: orgId, name: "Default", isDefault: true, ...data },
+  });
+const getDefaultAssistant = (orgId: string) =>
+  prisma.assistant.findFirst({
+    where: { organizationId: orgId },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+  });
 
 describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
   beforeEach(async () => {
@@ -20,35 +35,31 @@ describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
     await disconnect();
   });
 
-  it("pulls assistant config + number + KB into OrgVapiConfig", async () => {
+  it("pulls assistant config + number + KB into the default Assistant", async () => {
     const org = await createOrg();
     // Give it a known assistant id so pull uses it.
-    await prisma.orgVapiConfig.update({
-      where: { organizationId: org.id },
-      data: { vapiAssistantId: "asst_known" },
-    });
+    await createDefaultAssistant(org.id, { providerAssistantId: "asst_known" });
 
     const res = await syncOrganizationFromVapi(org.id);
     expect(res.syncStatus).toBe("synced");
 
+    const assistant = await getDefaultAssistant(org.id);
+    expect(assistant?.greeting).toBe("Hello from Vapi");
+    expect(assistant?.prompt).toContain("receptionist");
+    expect(assistant?.voice).toBe("Elliot");
+    expect(assistant?.llmModel).toBe("gpt-4o");
+    expect(assistant?.providerPhoneNumber).toMatch(/^\+1555\d{7}$/);
+    expect(assistant?.providerKnowledgeBaseId).toBeTruthy();
+
     const cfg = await prisma.orgVapiConfig.findUnique({
       where: { organizationId: org.id },
     });
-    expect(cfg?.greeting).toBe("Hello from Vapi");
-    expect(cfg?.prompt).toContain("receptionist");
-    expect(cfg?.voice).toBe("Elliot");
-    expect(cfg?.llmModel).toBe("gpt-4o");
-    expect(cfg?.vapiPhoneNumber).toMatch(/^\+1555\d{7}$/);
-    expect(cfg?.vapiKnowledgeBaseId).toBeTruthy();
     expect(cfg?.syncStatus).toBe("synced");
   });
 
   it("imports historical calls and is idempotent on re-sync", async () => {
     const org = await createOrg();
-    await prisma.orgVapiConfig.update({
-      where: { organizationId: org.id },
-      data: { vapiAssistantId: "asst_known" },
-    });
+    await createDefaultAssistant(org.id, { providerAssistantId: "asst_known" });
 
     const first = await syncOrganizationFromVapi(org.id);
     expect(first.importedCalls).toBe(2);
@@ -78,14 +89,17 @@ describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
 
   it("resetOrgVapiData clears Vapi-derived data + calls but keeps the saved key", async () => {
     const org = await createOrg();
+    await createDefaultAssistant(org.id, {
+      providerAssistantId: "asst_fake_x",
+      providerPhoneNumber: "+15551234567",
+      greeting: "Hello from Vapi",
+      voice: "Elliot",
+      llmModel: "gpt-4o",
+      syncStatus: "synced",
+    });
     await prisma.orgVapiConfig.update({
       where: { organizationId: org.id },
       data: {
-        vapiAssistantId: "asst_fake_x",
-        vapiPhoneNumber: "+15551234567",
-        greeting: "Hello from Vapi",
-        voice: "Elliot",
-        llmModel: "gpt-4o",
         vapiPrivateKeyEnc: "enc-blob",
         vapiKeyLast4: "abcd",
         syncStatus: "synced",
@@ -101,26 +115,31 @@ describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
 
     const res = await resetOrgVapiData(org.id);
 
+    // The mirror ids (sourced from the default assistant) are cleared.
     expect(res.vapiAssistantId).toBeNull();
     expect(res.vapiPhoneNumber).toBeNull();
-    expect(res.greeting).toBeNull();
-    expect(res.voice).toBeNull();
-    expect(res.llmModel).toBeNull();
     // Key is preserved.
     expect(res.hasCustomKey).toBe(true);
     expect(res.keyLast4).toBe("abcd");
+
+    // The assistant is disconnected from Vapi (provider ids cleared) but keeps its config.
+    const assistant = await getDefaultAssistant(org.id);
+    expect(assistant?.providerAssistantId).toBeNull();
+    expect(assistant?.providerPhoneNumber).toBeNull();
+    expect(assistant?.greeting).toBe("Hello from Vapi");
+
     // Imported calls are gone.
     expect(await prisma.call.count({ where: { organizationId: org.id } })).toBe(0);
   });
 
   it("reflectAllOrgsFromVapi fully reflects Vapi for keyed orgs and logs every run", async () => {
     const keyed = await createOrg();
+    await createDefaultAssistant(keyed.id, { providerAssistantId: "asst_known" });
     await prisma.orgVapiConfig.update({
       where: { organizationId: keyed.id },
       data: {
-        vapiPrivateKeyEnc: "enc-blob",
-        vapiKeyLast4: "abcd",
-        vapiAssistantId: "asst_known",
+        vapiPrivateKeyEnc: encryptSecret("priv_test_key"),
+        vapiKeyLast4: "key0",
       },
     });
     const keyless = await createOrg(); // no key / no assistant → must be skipped
@@ -131,11 +150,9 @@ describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
     expect(res.find((r) => r.orgId === keyless.id)).toBeUndefined();
     expect(await prisma.call.count({ where: { organizationId: keyed.id } })).toBe(2);
 
-    const cfg = await prisma.orgVapiConfig.findUnique({
-      where: { organizationId: keyed.id },
-    });
-    expect(cfg?.greeting).toBe("Hello from Vapi"); // overwritten from Vapi (full reflect)
-    expect(cfg?.voice).toBe("Elliot");
+    const assistant = await getDefaultAssistant(keyed.id);
+    expect(assistant?.greeting).toBe("Hello from Vapi"); // overwritten from Vapi (full reflect)
+    expect(assistant?.voice).toBe("Elliot");
 
     const tools = await prisma.vapiTool.findMany({
       where: { organizationId: keyed.id },
@@ -156,6 +173,31 @@ describe.skipIf(!hasTestDb)("pull-sync from Vapi (R6)", () => {
       where: { organizationId: keyed.id },
     });
     expect(logs2).toBe(logs1 + 1);
+  });
+
+  it("reflects ALL Vapi-account assistants, bootstrapping a keyed org that has none yet", async () => {
+    const org = await createOrg();
+    await prisma.orgVapiConfig.update({
+      where: { organizationId: org.id },
+      data: {
+        vapiPrivateKeyEnc: encryptSecret("priv_test_key"),
+        vapiKeyLast4: "key0",
+      },
+    });
+    // No Assistant rows yet — the poller must bootstrap from the Vapi account.
+    expect(await prisma.assistant.count({ where: { organizationId: org.id } })).toBe(0);
+
+    await reflectAllOrgsFromVapi();
+
+    const ids = (
+      await prisma.assistant.findMany({
+        where: { organizationId: org.id },
+        select: { providerAssistantId: true },
+      })
+    ).map((a) => a.providerAssistantId);
+    // The fake account exposes asst_fake_1 / asst_fake_2 (Receptionist A / B).
+    expect(ids).toContain("asst_fake_1");
+    expect(ids).toContain("asst_fake_2");
   });
 
   it("records syncStatus=failed when the provider throws", async () => {

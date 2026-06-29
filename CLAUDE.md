@@ -134,30 +134,66 @@ verify): run DB migrations + seed, run the integration suite, and a live Vapi ca
 The model now supports **N assistants per organization** (was 1). Lasting decisions:
 - New `Assistant` model (1 org : N) holds per-assistant provider mirror ids + config
   (provider-neutral names: `providerAssistantId`/`providerPhoneNumber`/…). `OrgVapiConfig` is now
-  the **org-level connection** (API key, `vapiOrgId`, `vapiPublicKey`). Its per-assistant fields are
-  **deprecated** (kept temporarily for the legacy single-assistant path + integration tests; remove
-  in the contract phase once UI/routes fully move to `assistants.service`).
-- **Tools + knowledge are an org-level library**; each assistant selects a subset via join tables
-  `AssistantTool` / `AssistantKnowledgeFile`. All three new models are in `CUSTOMER_DATA_MODELS`.
+  **strictly the org-level connection** (API key, `vapiOrgId`, `vapiPublicKey`, sync status). The
+  per-assistant fields were **removed** from `OrgVapiConfig` in the M-A2 de-dup migration
+  (`dedup_vapi_assistant_fields`): the legacy org-level flows in `organizations.service.ts`
+  (provision/sync/reconcile/reset/`getVapiSettings`) now read/write the org's **default `Assistant`**
+  via a `getDefaultAssistant` helper, and `mirrorDefaultAssistant` is the single write path that
+  keeps it in lockstep with Vapi. The dead single-active-assistant path (`listOrgAssistants`/
+  `setActiveAssistant` + its `/vapi/assistants` route + `AssistantList`/`SetActiveAssistant`
+  contracts) and the one-time `prisma/backfill-assistants.ts` were deleted.
+- **Unique Vapi keys:** every Vapi-mirrored entity id is `@unique` so a table can't hold duplicate
+  mirrors — `Assistant.providerAssistantId`/`providerPhoneNumber`/`providerPhoneNumberId`,
+  `VapiTool.vapiToolId`, `KnowledgeBaseFile.vapiFileId`, `Call.vapiCallId`. (`providerKnowledgeBaseId`
+  and the org-level `vapiOrgId` stay non-unique — a KB can be composed/empty and a platform Vapi org
+  may be shared.)
+- **Tools, knowledge, services, AND staff are org-level libraries**; each assistant selects a subset
+  via join tables `AssistantTool` / `AssistantKnowledgeFile` / `AssistantService` / `AssistantStaff`
+  (all in `CUSTOMER_DATA_MODELS`). The `Assistant` page is the hub: tabs Config · Services · Staff ·
+  Knowledge · Tools · Simulator, each a checkbox picker over the org library (`AssistantPicker`).
+  **Empty selection = "offer all"** (no restriction) — keeps default/new assistants working.
+- **Per-assistant runtime scoping (services/staff):** the inbound tool webhook reads the calling
+  assistant from the Vapi payload (`message.assistant.id`, mirrored to `NormalizedToolCall.providerAssistantId`),
+  resolves our `Assistant.id` (via the `@unique providerAssistantId`), and threads the assistant's
+  `getAssistantScope` into `runTool(orgId, scope, name, args)`. The booking/service/staff handlers
+  filter by `scope.serviceIds`/`scope.staffIds`; `getAvailability`/`autoAssignAndBook` take an
+  `allowedStaffIds` filter. The registry never imports the assistants feature (scope is passed in, not
+  fetched) to avoid a cycle. The simulator resolves the same scope so it matches a live call.
 - **Tool registry** (`src/server/features/receptionist-tools/tools.registry.ts`) is the single
   source of truth for the full receptionist tool catalog (booking/customer/service/staff) — each
   tool carries description + JSON-schema parameters (so the LLM/provider gets real schemas) + Zod +
   handler. `runTool` dispatches via it; `builtinToolDefs()` = the 3 auto-provisioned built-ins,
   `toolCatalog()` = the full selectable set seeded into each org's library.
 - **Per-assistant call attribution:** the assistant's call-ended `server.url` carries
-  `&assistant_id=` (our `Assistant.id`); the shared tool webhook stays org-only.
+  `&assistant_id=` (our `Assistant.id`). The shared tool webhook URL stays org-only, but the tool
+  handler now also reads the assistant from the call payload body (see runtime scoping above).
+- **Two-way Vapi sync for assistants:** portal **Add** auto-provisions (`createAndProvisionAssistant` →
+  `provisionAssistant`, best-effort; the local row is always kept with the right `syncStatus`/`syncError`);
+  **Update** pushes name/greeting/prompt/voice/llmModel via `updateAssistant`; **Delete** tears down the
+  Vapi assistant. The **60s poller** (`instrumentation.ts` → `reflectAllOrgsFromVapi`, needs
+  `AUTO_SYNC_ENABLED=true`) pulls Vapi → portal. The assistant **Config / create popup** voice + LLM-model
+  fields are dropdowns fed by `GET /voice-options` (`listVoices`/`listModels`) via `OptionSelect`.
 - **Simulator:** per-assistant "call & see the demo" — primary path is a real Vapi **web voice call**
   (`@vapi-ai/web`, browser, authed with the org `vapiPublicKey`); fallback is a Claude **text-chat**
   via the new `SimulatorLlm` port + `src/server/adapters/llm/anthropic/` adapter (`@anthropic-ai/sdk`,
   isolated like the voice SDK — see `test/unit/architecture/sdk-isolation.test.ts`). New env:
   `ANTHROPIC_API_KEY`. Both run the assistant's selected tools through the same `runTool` dispatch.
-- **Nav** (`src/shared/ui/AppShell.tsx`) is now grouped by setup order: Setup (Services → Staff →
-  Schedules → Knowledge Base → Tools → Assistants) → Operations → Account.
+- **Nav** (`src/shared/ui/AppShell.tsx`) frames the assistant as the hub: Inbound = **Assistants**
+  (top) → **Library** (Services/Staff/Schedules/Knowledge Base/Tools — the shared building blocks an
+  assistant selects from) → **Operations** (Calls/Bookings/Calendar/Customers). The org-level Library
+  pages remain the CRUD/master lists.
 
-Status: `typecheck`, `lint`, `npm test` (**125 unit green**), and `npm run build` pass. After
-`npm run db:push:test`, integration is **34/35** — the one failure (`reflectAllOrgsFromVapi`) is a
-**pre-existing** fixture↔env mismatch (test stores a fake `"enc-blob"` credential that can't decrypt
-under a real `CREDENTIAL_ENCRYPTION_KEY`; untouched by this work).
+Status: `typecheck`, `lint`, `npm test` (**126 unit green**), and `npm run build` pass. The
+integration suite needs a test DB; after the M-A2 de-dup migration its `sync`/`provisioning` cases
+assert per-assistant data on the `Assistant` table, and the `reflectAllOrgsFromVapi` fixture now
+seeds a **real `encryptSecret(...)` credential** (was the un-decryptable `"enc-blob"`), so that
+case should pass once `DATABASE_URL_TEST` is set + `npm run db:push:test` is run. The per-assistant
+service/staff scoping has a new suite (`test/integration/assistant-scoping.test.ts`) and adds a
+migration `assistant_service_staff`. Schema changes
+require a migration: `npx prisma migrate dev --name dedup_vapi_assistant_fields`. NOTE: on Windows a
+running IDE/dev server can lock the Prisma engine DLL and make `prisma generate` fail with EPERM —
+the generated client types are still updated; close the locking process and re-run to refresh the
+engine binary (correctness is unaffected).
 
 ## How to run it (once `.env.local` has DATABASE_URL etc.)
 

@@ -25,6 +25,8 @@ export interface ProvisionOrgInput {
   /** Public base URL the provider should call for tools + call-ended webhooks. */
   publicApiBaseUrl: string;
   assistant: {
+    /** The assistant's display name in the provider (falls back to the org name). */
+    name?: string;
     greeting?: string;
     prompt?: string;
     voice?: string;
@@ -39,8 +41,9 @@ export interface ProvisionOrgInput {
 /** Neutral result of provisioning — provider ids in a vendor-agnostic shape. */
 export interface ProvisionResult {
   assistantId: string;
-  phoneNumber: string; // E.164
-  phoneNumberId: string;
+  /** Optional — a number may not be provisioned (e.g. no area code configured to buy one). */
+  phoneNumber?: string; // E.164
+  phoneNumberId?: string;
   knowledgeBaseId?: string;
   toolIds: Array<{ name: ToolName; id: string }>;
   providerOrgId?: string;
@@ -50,6 +53,7 @@ export interface ProvisionResult {
 export interface UpdateAssistantInput {
   organizationId: string;
   assistantId: string;
+  name?: string;
   greeting?: string;
   prompt?: string;
   voice?: string;
@@ -95,6 +99,11 @@ export interface UploadKnowledgeFileResult {
 export interface NormalizedToolCall {
   /** Server-trusted tenant id, read from the provider's static parameters. */
   organizationId: string;
+  /**
+   * The provider's assistant id from the call payload (e.g. Vapi `message.assistant.id`), used to
+   * attribute the call to one of the org's assistants for per-assistant scoping. Optional.
+   */
+  providerAssistantId?: string;
   /** Echoed back verbatim in the response (Vapi `toolCallId`). */
   toolCallId: string;
   toolName: ToolName | string;

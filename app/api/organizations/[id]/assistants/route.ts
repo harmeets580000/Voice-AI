@@ -7,7 +7,7 @@ import { requireRole } from "@server/platform/auth/context";
 import { Role } from "@domain/enums";
 import {
   listAssistants,
-  createAssistant,
+  createAndProvisionAssistant,
   importAssistant,
 } from "@server/features/assistants/assistants.service";
 
@@ -24,19 +24,26 @@ export const GET = handleRoute(async (_req, ctx) => {
   return ok(res);
 });
 
-/** Create a new assistant, or import an existing provider assistant. Super-admin only. */
+/**
+ * Create a new assistant (also provisioned in Vapi so the same record exists on both sides), or
+ * import an existing provider assistant. Super-admin only.
+ */
 export const POST = handleRoute(async (req, ctx) => {
-  await requireRole([Role.SUPER_ADMIN]);
+  const principal = await requireRole([Role.SUPER_ADMIN]);
   const { id } = await (ctx as Ctx).params;
   const body = CreateAssistantRequest.parse(await req.json());
   const assistant = body.importProviderAssistantId
     ? await importAssistant(id, body.importProviderAssistantId, body.name)
-    : await createAssistant(id, {
-        name: body.name,
-        greeting: body.greeting,
-        prompt: body.prompt,
-        voice: body.voice,
-        llmModel: body.llmModel,
-      });
+    : await createAndProvisionAssistant(
+        id,
+        {
+          name: body.name,
+          greeting: body.greeting,
+          prompt: body.prompt,
+          voice: body.voice,
+          llmModel: body.llmModel,
+        },
+        principal.userId,
+      );
   return created({ assistant });
 });

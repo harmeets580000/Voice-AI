@@ -133,8 +133,8 @@ function OrganizationsAdmin() {
   return (
     <PageContainer>
       <PageHeader
-        title="Organizations"
-        subtitle="Onboard and manage customer organizations."
+        title="Vapi Settings"
+        subtitle="Onboard customers and manage each organization's Vapi connection."
         actions={
           <Button onClick={() => setOpen(true)} leftIcon={<Plus size={16} />}>
             New organization

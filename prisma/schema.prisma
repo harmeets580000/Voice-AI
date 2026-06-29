@@ -96,38 +96,29 @@ model Organization {
   vapiConfig OrgVapiConfig?
   theme      OrgTheme?
 
-  // Multi-assistant (1 org : N assistants). Tools/KB are an org-level library; each
-  // assistant selects a subset via the join tables below.
+  // Multi-assistant (1 org : N assistants). Tools/KB/Services/Staff are an org-level library;
+  // each assistant selects a subset via the join tables below.
   assistants              Assistant[]
   assistantTools          AssistantTool[]
   assistantKnowledgeFiles AssistantKnowledgeFile[]
+  assistantServices       AssistantService[]
+  assistantStaff          AssistantStaff[]
 
   @@map("organizations")
 }
 
 // ---------- Per-org Vapi connection (org-level credential + sync) ----------
-// NOTE (multi-assistant migration): the per-assistant fields below
-// (vapiAssistantId / vapiPhoneNumber(Id) / vapiKnowledgeBaseId / greeting / prompt /
-// voice / llmModel) are being moved to the `Assistant` model (1 org : N assistants).
-// They are kept here temporarily so existing consumers compile during M-A1; M-A2
-// rewires consumers to `Assistant` and then these fields are removed.
+// This is the ORG-LEVEL Vapi connection only: the API key, the Vapi org id, the browser
+// public key, and connection sync status. All per-assistant data (assistant/phone/KB ids
+// + greeting/prompt/voice/llmModel) lives on the `Assistant` model (1 org : N assistants).
 
 model OrgVapiConfig {
   id             String       @id @default(cuid())
   organizationId String       @unique
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  provider            String  @default("vapi") // "vapi" | "retell"
-  vapiOrgId           String?
-  vapiAssistantId     String? // DEPRECATED → Assistant.providerAssistantId
-  vapiPhoneNumberId   String? // DEPRECATED → Assistant.providerPhoneNumberId
-  vapiPhoneNumber     String? @unique // DEPRECATED → Assistant.providerPhoneNumber
-  vapiKnowledgeBaseId String? // DEPRECATED → Assistant.providerKnowledgeBaseId
-
-  greeting String? // DEPRECATED → Assistant.greeting
-  prompt   String? // DEPRECATED → Assistant.prompt
-  voice    String? // DEPRECATED → Assistant.voice
-  llmModel String? // DEPRECATED → Assistant.llmModel
+  provider  String  @default("vapi") // "vapi" | "retell"
+  vapiOrgId String?
 
   // Optional per-customer Vapi credential override. NULL => use the platform key.
   // Stored ENCRYPTED (AES-256-GCM); plaintext never leaves the server.
@@ -141,11 +132,9 @@ model OrgVapiConfig {
   syncStatus   SyncStatus @default(pending)
   lastSyncedAt DateTime?
   syncError    String?
-  vapiRaw      Json?
 
   updatedAt DateTime @updatedAt
 
-  @@index([vapiAssistantId])
   @@map("org_vapi_config")
 }
 
@@ -163,7 +152,7 @@ model Assistant {
   // Provider mirror ids (per-assistant)
   provider                String  @default("vapi") // "vapi" | "retell" | ...
   providerAssistantId     String? @unique
-  providerPhoneNumberId   String?
+  providerPhoneNumberId   String? @unique
   providerPhoneNumber     String? @unique // E.164
   providerKnowledgeBaseId String? // composed from this assistant's selected KB files
 
@@ -182,9 +171,11 @@ model Assistant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Per-assistant selections from the org-level tool / knowledge libraries
+  // Per-assistant selections from the org-level tool / knowledge / service / staff libraries
   tools          AssistantTool[]
   knowledgeFiles AssistantKnowledgeFile[]
+  services       AssistantService[]
+  staff          AssistantStaff[]
   calls          Call[]
 
   @@index([organizationId])
@@ -224,6 +215,40 @@ model AssistantKnowledgeFile {
   @@index([organizationId])
   @@index([fileId])
   @@map("assistant_knowledge_files")
+}
+
+// Join: which org-library services an assistant offers (many-to-many).
+model AssistantService {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String
+  assistant      Assistant    @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  serviceId      String
+  service        Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([assistantId, serviceId])
+  @@index([organizationId])
+  @@index([serviceId])
+  @@map("assistant_services")
+}
+
+// Join: which org-library staff an assistant books with (many-to-many).
+model AssistantStaff {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistantId    String
+  assistant      Assistant    @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  staffId        String
+  staff          Staff        @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([assistantId, staffId])
+  @@index([organizationId])
+  @@index([staffId])
+  @@map("assistant_staff")
 }
 
 // ---------- Theming ----------
@@ -304,6 +329,9 @@ model Staff {
   timeOff   StaffTimeOff[]
   bookings  Booking[]
 
+  // Assistants that selected this staff member (per-assistant scoping).
+  assistantSelections AssistantStaff[]
+
   @@index([organizationId])
   @@map("staff")
 }
@@ -320,6 +348,9 @@ model Service {
   createdAt       DateTime     @default(now())
 
   bookings Booking[]
+
+  // Assistants that selected this service (per-assistant scoping).
+  assistantSelections AssistantService[]
 
   @@index([organizationId])
   @@map("services")
@@ -466,7 +497,7 @@ model VapiTool {
   id             String       @id @default(cuid())
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  vapiToolId     String?
+  vapiToolId     String?      @unique
   name           String // built-ins: check_availability | book_appointment | lookup_customer
   kind           String       @default("builtin") // "builtin" | "custom"
   enabled        Boolean      @default(true) // only enabled tools are pushed to Vapi
@@ -532,7 +563,7 @@ model KnowledgeBaseFile {
   organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   documentId          String
   document            Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  vapiFileId          String?
+  vapiFileId          String?      @unique
   vapiKnowledgeBaseId String?
   sizeBytes           Int?
   syncStatus          SyncStatus   @default(pending)

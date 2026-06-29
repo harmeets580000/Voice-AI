@@ -7,7 +7,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tenantDb } from "@server/platform/db/scoped";
-import { prisma } from "@server/platform/db/client";
 import { AppError } from "@server/platform/http/errors";
 import { getVoiceProvider } from "@server/config/providers";
 
@@ -66,9 +65,10 @@ export async function uploadDocument(orgId: string, input: UploadInput) {
   });
 
   // 2) Push working copy to the provider KB via the port; mirror the file id.
-  const cfg = await prisma.orgVapiConfig.findUnique({
-    where: { organizationId: orgId },
-    select: { vapiKnowledgeBaseId: true, vapiAssistantId: true },
+  // Per-assistant KB id + provider assistant id live on the default Assistant now.
+  const def = await db.assistant.findFirst({
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+    select: { id: true, providerKnowledgeBaseId: true, providerAssistantId: true },
   });
 
   const kbFile = await db.knowledgeBaseFile.create({
@@ -83,8 +83,8 @@ export async function uploadDocument(orgId: string, input: UploadInput) {
   try {
     const result = await getVoiceProvider().uploadKnowledgeFile({
       organizationId: orgId,
-      knowledgeBaseId: cfg?.vapiKnowledgeBaseId ?? undefined,
-      assistantId: cfg?.vapiAssistantId ?? undefined,
+      knowledgeBaseId: def?.providerKnowledgeBaseId ?? undefined,
+      assistantId: def?.providerAssistantId ?? undefined,
       fileName: input.fileName,
       content: input.content,
       mimeType: input.mimeType,
@@ -98,6 +98,13 @@ export async function uploadDocument(orgId: string, input: UploadInput) {
         lastSyncedAt: new Date(),
       },
     });
+    // Mirror the (possibly newly-created) KB id back onto the default assistant.
+    if (def && result.knowledgeBaseId) {
+      await db.assistant.update({
+        where: { id: def.id },
+        data: { providerKnowledgeBaseId: result.knowledgeBaseId },
+      });
+    }
   } catch (e) {
     await db.knowledgeBaseFile.update({
       where: { id: kbFile.id },

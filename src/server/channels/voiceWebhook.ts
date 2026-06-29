@@ -8,6 +8,10 @@
 import { getVoiceProvider } from "@server/config/providers";
 import { runTool } from "@server/features/receptionist-tools/tools.service";
 import { saveCallRecord } from "@server/features/calls/calls.service";
+import {
+  resolveAssistantIdByProviderId,
+  getAssistantScope,
+} from "@server/features/assistants/assistants.service";
 import { AppError } from "@server/platform/http/errors";
 import { logger } from "@server/platform/logging/logger";
 
@@ -27,7 +31,17 @@ export async function handleToolWebhook(req: Request): Promise<unknown> {
   if (!call.organizationId) {
     throw AppError.badRequest("Missing organization_id (server-trusted) on tool call");
   }
-  const result = await runTool(call.organizationId, String(call.toolName), call.args);
+  // Attribute to one of the org's assistants so its selected services/staff scope the call.
+  const assistantId = call.providerAssistantId
+    ? await resolveAssistantIdByProviderId(call.organizationId, call.providerAssistantId)
+    : null;
+  const scope = await getAssistantScope(call.organizationId, assistantId);
+  const result = await runTool(
+    call.organizationId,
+    scope,
+    String(call.toolName),
+    call.args,
+  );
   return provider.formatToolResponse(call.toolCallId, result);
 }
 

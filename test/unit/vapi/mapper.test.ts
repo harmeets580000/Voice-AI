@@ -67,6 +67,31 @@ describe("Vapi mapper — tool calls (U-VAPI-01, U-VAPI-02)", () => {
     expect(out.organizationId).toBe("orgMeta");
   });
 
+  it("extracts the provider assistant id (for per-assistant scoping) from the payload", () => {
+    const fromAssistant = parseInboundToolCall({
+      query: { organization_id: "orgA" },
+      body: {
+        message: {
+          assistant: { id: "asst_42" },
+          toolCallList: [{ id: "c", name: "check_availability", arguments: {} }],
+        },
+      },
+    });
+    expect(fromAssistant.providerAssistantId).toBe("asst_42");
+
+    // Falls back to message.call.assistantId.
+    const fromCall = parseInboundToolCall({
+      query: { organization_id: "orgA" },
+      body: {
+        message: {
+          call: { assistantId: "asst_7" },
+          toolCallList: [{ id: "c", name: "check_availability", arguments: {} }],
+        },
+      },
+    });
+    expect(fromCall.providerAssistantId).toBe("asst_7");
+  });
+
   it("U-VAPI-02: formatToolResponse echoes the same toolCallId", () => {
     const res = formatToolResponse("call_123", { ok: true }) as {
       results: { toolCallId: string; result: string }[];

@@ -16,6 +16,7 @@ import {
   builtinToolDefs,
   runTool,
 } from "@server/features/receptionist-tools/tools.registry";
+import { getAssistantScope } from "./assistants.service";
 import type {
   SimulatorMessage,
   SimulatorResult,
@@ -60,6 +61,9 @@ export async function simulateAssistantTurn(
     return { name: e.name, description: e.description, parameters: e.parameters };
   });
 
+  // Scope tool execution to this assistant's selected services/staff (matches a live call).
+  const scope = await getAssistantScope(orgId, assistantId);
+
   const today = DateTime.now().setZone(tz).toISODate();
   const persona =
     assistant.prompt?.trim() ||
@@ -77,6 +81,6 @@ export async function simulateAssistantTurn(
     system,
     messages,
     tools,
-    executeTool: (name, args) => runTool(orgId, name, args),
+    executeTool: (name, args) => runTool(orgId, scope, name, args),
   });
 }

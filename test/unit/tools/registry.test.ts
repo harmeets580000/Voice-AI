@@ -31,7 +31,7 @@ describe("tool registry (M-A3)", () => {
   });
 
   it("runTool rejects an unknown tool", async () => {
-    await expect(runTool("org_1", "no_such_tool", {})).rejects.toThrow(
+    await expect(runTool("org_1", null, "no_such_tool", {})).rejects.toThrow(
       /Unknown tool/,
     );
   });

@@ -24,6 +24,7 @@ function toDTO(doc: any): DocumentDTO {
     sizeBytes: doc.sizeBytes ?? null,
     uploadedAt: doc.uploadedAt.toISOString(),
     syncStatus: doc.kbFiles?.[0]?.syncStatus ?? null,
+    knowledgeFileId: doc.kbFiles?.[0]?.id ?? null,
   };
 }
 

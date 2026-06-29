@@ -1,93 +1,52 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, RefreshCw, Zap, KeyRound, Bot, Phone, RotateCcw } from "lucide-react";
+import { RefreshCw, KeyRound, Bot, Phone, RotateCcw } from "lucide-react";
 import { api } from "@shared/api/client";
 import {
   PageHeader,
   Card,
   Button,
-  Field,
-  Input,
-  Select,
-  Textarea,
   PasswordInput,
   Badge,
 } from "@shared/ui/primitives";
 import { useToast } from "@shared/ui/Toast";
-import { OptionSelect } from "@features/voice/OptionSelect";
-import { ToolsManager } from "./ToolsManager";
 import { SyncHistory } from "./SyncHistory";
 import type {
   VapiSettingsResponse,
   TestKeyResponse,
-  ProvisionResponse,
-  VoiceOptionsResponse,
-  ToolsSyncResponse,
-  AssistantListResponse,
 } from "@contracts/vapi";
 
-type Tab = "connection" | "assistant" | "tools" | "status" | "history";
+type Tab = "connection" | "status" | "history";
 const TABS: { id: Tab; label: string }[] = [
   { id: "connection", label: "Connection" },
-  { id: "assistant", label: "Assistant" },
-  { id: "tools", label: "Tools" },
   { id: "status", label: "Status" },
   { id: "history", label: "History" },
 ];
 
 /**
- * Per-customer Vapi settings (super-admin only). The private key field is masked and the
+ * Per-customer Vapi settings (super-admin only) — the org-level Vapi CONNECTION, live status
+ * mirror, and sync history. Assistants and Tools have their own dedicated pages (/assistants,
+ * /tools), so they are intentionally not duplicated here. The private key field is masked and the
  * plaintext is NEVER rendered back — only the stored last-4 is shown (test C-SEC-07).
  */
 export function VapiSettingsPage({ orgId }: { orgId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [keyInput, setKeyInput] = useState("");
-  const [selectingAssistant, setSelectingAssistant] = useState(false);
   const [tab, setTab] = useState<Tab>("connection");
-  const [form, setForm] = useState({
-    greeting: "",
-    prompt: "",
-    voice: "",
-    llmModel: "",
-  });
 
   const { data } = useQuery({
     queryKey: ["vapi", orgId],
     queryFn: () => api.get<VapiSettingsResponse>(`/organizations/${orgId}/vapi`),
   });
-  const { data: opts } = useQuery({
-    queryKey: ["voice-options"],
-    queryFn: () => api.get<VoiceOptionsResponse>("/voice-options"),
-    staleTime: 5 * 60_000,
-  });
-  const assistantsQuery = useQuery({
-    queryKey: ["vapi-assistants", orgId],
-    queryFn: () =>
-      api.get<AssistantListResponse>(`/organizations/${orgId}/vapi/assistants`),
-    enabled: !!data?.settings?.hasCustomKey,
-  });
-
-  useEffect(() => {
-    if (data?.settings) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setForm({
-        greeting: data.settings.greeting ?? "",
-        prompt: data.settings.prompt ?? "",
-        voice: data.settings.voice ?? "",
-        llmModel: data.settings.llmModel ?? "",
-      });
-    }
-  }, [data]);
 
   const s = data?.settings;
 
   async function onSave(): Promise<boolean> {
     try {
       await api.put<VapiSettingsResponse>(`/organizations/${orgId}/vapi`, {
-        ...form,
         ...(keyInput ? { privateKey: keyInput } : {}),
       });
       setKeyInput("");
@@ -108,8 +67,8 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
       );
       if (res.valid) {
         toast.success("Key valid — saving & syncing from Vapi…");
-        // Persist the key first so the sync (and later provision) use it. With no platform
-        // key in .env, an unsaved key would leave the sync with nothing to authenticate with.
+        // Persist the key first so the sync uses it. With no platform key in .env, an unsaved
+        // key would leave the sync with nothing to authenticate with.
         await onSave();
         await onSync();
       } else {
@@ -118,52 +77,6 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
     } catch {
       toast.error("Could not validate key");
     }
-  }
-
-  async function onProvision() {
-    try {
-      const res = await api.post<ProvisionResponse>(
-        `/organizations/${orgId}/provision`,
-      );
-      await queryClient.invalidateQueries({ queryKey: ["vapi", orgId] });
-      if (res.syncStatus === "synced") toast.success("Provisioned successfully");
-      else toast.error(`Provision ${res.syncStatus}: ${res.syncError ?? ""}`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Provision failed");
-    }
-  }
-
-  async function onSelectAssistant(assistantId: string) {
-    if (!assistantId || assistantId === s?.vapiAssistantId) return;
-    setSelectingAssistant(true);
-    try {
-      await api.put<VapiSettingsResponse>(
-        `/organizations/${orgId}/vapi/assistants`,
-        { assistantId },
-      );
-      await queryClient.invalidateQueries();
-      toast.success("Active assistant updated");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not switch assistant");
-    } finally {
-      setSelectingAssistant(false);
-    }
-  }
-
-  async function onSaveAndProvision() {
-    if (!(await onSave())) return;
-    await onProvision();
-    // Also push this org's tools (built-in + custom, enabled set) to Vapi.
-    try {
-      const res = await api.post<ToolsSyncResponse>(
-        `/organizations/${orgId}/tools/sync`,
-      );
-      if (res.syncError) toast.error(`Tools sync: ${res.syncError}`);
-      else toast.success("Tools synced to Vapi");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Tools sync failed");
-    }
-    await queryClient.invalidateQueries();
   }
 
   async function onSync() {
@@ -209,7 +122,7 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
     <div className="max-w-4xl space-y-5">
       <PageHeader
         title="Vapi settings"
-        subtitle="Configure and inspect this customer's voice setup."
+        subtitle="Connect this customer to Vapi and inspect its live voice setup."
       />
 
       <div role="tablist" className="flex flex-wrap gap-2 text-sm">
@@ -292,89 +205,6 @@ export function VapiSettingsPage({ orgId }: { orgId: string }) {
         </div>
         </Card>
       )}
-
-      {/* Assistant: active-assistant selector + editable config */}
-      {tab === "assistant" && (
-        <Card className="space-y-3">
-        <h2 className="font-medium text-text">Assistant</h2>
-        <p className="text-xs text-muted">
-          Vapi is the source of truth: these fields auto-reflect from Vapi every minute, so changes
-          made in the Vapi dashboard appear here (and overwrite unsaved edits). Edit here and Save to
-          push your changes to Vapi.
-        </p>
-        {s?.hasCustomKey && (
-          <Field label="Active assistant">
-            <Select
-              value={s?.vapiAssistantId ?? ""}
-              disabled={selectingAssistant || assistantsQuery.isLoading}
-              onChange={(e) => onSelectAssistant(e.target.value)}
-              title="Pick which assistant in this org's Vapi account is the active one. Selecting loads its config and links its calls."
-            >
-              <option value="">
-                {assistantsQuery.isLoading
-                  ? "Loading assistants…"
-                  : "— Select an assistant —"}
-              </option>
-              {assistantsQuery.data?.assistants.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name || a.id}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        )}
-        <Field label="Greeting (first message)">
-          <Input
-            value={form.greeting}
-            onChange={(e) => setForm((f) => ({ ...f, greeting: e.target.value }))}
-          />
-        </Field>
-        <Field label="System prompt">
-          <Textarea
-            rows={3}
-            value={form.prompt}
-            onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
-          />
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <OptionSelect
-            label="Voice"
-            value={form.voice}
-            onChange={(v) => setForm((f) => ({ ...f, voice: v }))}
-            options={opts?.voices ?? []}
-          />
-          <OptionSelect
-            label="LLM model"
-            value={form.llmModel}
-            onChange={(v) => setForm((f) => ({ ...f, llmModel: v }))}
-            options={opts?.models ?? []}
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-3 pt-1">
-          <Button
-            onClick={onSave}
-            leftIcon={<Save size={16} />}
-            title="Save these assistant settings to our database (and push them to the live Vapi assistant if this org is already provisioned)."
-          >
-            Save
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={onSaveAndProvision}
-            leftIcon={<Zap size={16} />}
-            title="Save the settings, then create/update this org's assistant and phone number in Vapi, and sync its enabled tools."
-          >
-            {s?.vapiAssistantId
-              ? "Save & re-provision to Vapi"
-              : "Save & provision to Vapi"}
-          </Button>
-        </div>
-        </Card>
-      )}
-
-      {/* Tools: per-customer tools (built-in + custom), pushed on "Save & provision"
-          or via the Tools "Sync to Vapi" button. */}
-      {tab === "tools" && <ToolsManager orgId={orgId} />}
 
       {/* Status: live mirror of what's provisioned in Vapi */}
       {tab === "status" && (

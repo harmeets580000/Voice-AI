@@ -34,6 +34,10 @@ const EnvSchema = z.object({
   VAPI_API_KEY: z.string().default(""),
   VAPI_BASE_URL: z.string().default("https://api.vapi.ai"),
   PUBLIC_API_BASE_URL: z.string().default("http://localhost:3000"),
+  // Area code used to buy a free Vapi phone number when provisioning (e.g. "415"). Leave unset to
+  // create assistants WITHOUT a number (a number can be provisioned later). Vapi requires this to
+  // purchase a free number.
+  VAPI_DEFAULT_AREA_CODE: z.string().optional(),
 
   // Simulator LLM (Anthropic). Powers the per-assistant text-chat tester (Claude tool loop).
   ANTHROPIC_API_KEY: z.string().default(""),

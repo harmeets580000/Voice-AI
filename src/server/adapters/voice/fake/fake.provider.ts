@@ -117,6 +117,8 @@ export class FakeVoiceProvider implements VoiceProvider {
     const b = (req.body ?? {}) as Partial<NormalizedToolCall>;
     return {
       organizationId: String(b.organizationId ?? ""),
+      providerAssistantId:
+        typeof b.providerAssistantId === "string" ? b.providerAssistantId : undefined,
       toolCallId: String(b.toolCallId ?? id("call")),
       toolName: (b.toolName as ToolName) ?? ToolName.CHECK_AVAILABILITY,
       args: (b.args as Record<string, unknown>) ?? {},

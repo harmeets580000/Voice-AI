@@ -41,11 +41,15 @@ function dayBounds(date: string, tz: string): { start: Date; end: Date } {
   return { start: dayStart.toJSDate(), end: dayStart.endOf("day").toJSDate() };
 }
 
-/** Compute open slots for a service on a date, scoped to the org. */
+/**
+ * Compute open slots for a service on a date, scoped to the org. `allowedStaffIds` (the calling
+ * assistant's selected staff) further restricts which staff are considered; null/undefined = all.
+ */
 export async function getAvailability(
   orgId: string,
   serviceId: string,
   date: string,
+  allowedStaffIds?: string[] | null,
 ): Promise<Slot[]> {
   const db = tenantDb(orgId);
   const service = await db.service.findFirst({ where: { id: serviceId } });
@@ -54,8 +58,11 @@ export async function getAvailability(
   const tz = await getOrgTimezone(orgId);
   const { start, end } = dayBounds(date, tz);
 
+  const allowed = allowedStaffIds ? new Set(allowedStaffIds) : null;
   const staff = await db.staff.findMany({ where: { isActive: true } });
-  const staffIds = staff.map((s) => s.id);
+  const staffIds = staff
+    .map((s) => s.id)
+    .filter((id) => !allowed || allowed.has(id));
 
   const schedules = (await db.staffSchedule.findMany({
     where: { staffId: { in: staffIds } },
@@ -100,6 +107,8 @@ export interface BookInput {
   startDatetime: Date;
   customerId?: string | null;
   staffId?: string | null; // if omitted, auto-assign a free staff member
+  /** Restrict auto-assignment to these staff (the calling assistant's selection); null = all. */
+  allowedStaffIds?: string[] | null;
   source?: BookingSource;
   notes?: string;
 }
@@ -135,7 +144,12 @@ export async function autoAssignAndBook(
     const result = await db.$transaction(
       async (tx) => {
         // Recompute availability inside the txn from the current DB state.
-        const slots = await getAvailability(orgId, input.serviceId, dateStr);
+        const slots = await getAvailability(
+          orgId,
+          input.serviceId,
+          dateStr,
+          input.allowedStaffIds,
+        );
         const chosenStaff = input.staffId
           ? slots.find(
               (s) =>

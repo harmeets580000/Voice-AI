@@ -21,6 +21,7 @@ import { getVoiceProvider } from "@server/config/providers";
 import type { ProviderToolSnapshot } from "@server/ports/voice-provider.port";
 import { importNewCalls } from "@server/features/calls/calls.service";
 import { listTools } from "@server/features/tools/tools.service";
+import { reflectAssistantsFromVapi } from "@server/features/assistants/assistants.service";
 import { recordSyncLog } from "@server/features/sync/sync-log.service";
 import { ToolName } from "@domain/enums";
 import type {
@@ -39,6 +40,18 @@ function callEndedWebhookUrl(orgId: string): string {
   return `${env.PUBLIC_API_BASE_URL}/api/webhook/voice/call-ended?organization_id=${encodeURIComponent(orgId)}`;
 }
 
+/**
+ * The org's default/first assistant (read-only; null if the org has none yet). Per-assistant Vapi
+ * data — assistant/phone/KB ids + greeting/prompt/voice/llmModel — lives on `Assistant`, not on the
+ * org-level `OrgVapiConfig`. The legacy org-level flows below resolve the default assistant here.
+ */
+async function getDefaultAssistant(orgId: string) {
+  return prisma.assistant.findFirst({
+    where: { organizationId: orgId },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+  });
+}
+
 interface OrgRow {
   id: string;
   name: string;
@@ -51,8 +64,9 @@ interface OrgRow {
 async function toOrgDetail(org: OrgRow): Promise<OrgDetail> {
   const cfg = await prisma.orgVapiConfig.findUnique({
     where: { organizationId: org.id },
-    select: { syncStatus: true, vapiPhoneNumber: true },
+    select: { syncStatus: true },
   });
+  const def = await getDefaultAssistant(org.id);
   return {
     id: org.id,
     name: org.name,
@@ -60,7 +74,7 @@ async function toOrgDetail(org: OrgRow): Promise<OrgDetail> {
     status: org.status as OrgDetail["status"],
     timezone: org.timezone,
     syncStatus: (cfg?.syncStatus as OrgDetail["syncStatus"]) ?? null,
-    vapiPhoneNumber: cfg?.vapiPhoneNumber ?? null,
+    vapiPhoneNumber: def?.providerPhoneNumber ?? null,
     createdAt: org.createdAt.toISOString(),
   };
 }
@@ -134,14 +148,29 @@ async function resolveProviderKey(orgId: string): Promise<string | undefined> {
     where: { organizationId: orgId },
     select: { vapiPrivateKeyEnc: true },
   });
-  if (cfg?.vapiPrivateKeyEnc) return decryptSecret(cfg.vapiPrivateKeyEnc);
+  if (cfg?.vapiPrivateKeyEnc) {
+    try {
+      return decryptSecret(cfg.vapiPrivateKeyEnc);
+    } catch (e) {
+      // A corrupt/wrong-key credential must not 500 the caller — fall back to the platform key and
+      // let the provider call surface a graceful sync/provision failure instead.
+      logger.warn("resolveProviderKey: stored key could not be decrypted", {
+        orgId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return undefined;
+    }
+  }
   return undefined; // platform key (from env) is used by the adapter
 }
 
 /**
- * Mirror the org's provisioned config into the canonical `Assistant` table (multi-assistant).
- * The legacy single-assistant path keeps writing OrgVapiConfig; this keeps the new table in
- * sync as the org's default assistant. (Transitional until the legacy fields are removed.)
+ * Mirror the org's provisioned/synced config into the canonical `Assistant` table (multi-assistant)
+ * and link the org's synced tools to that assistant. `Assistant` is the source of truth for
+ * per-assistant config + provider ids, so both the provision and the "Sync from Vapi" flows write
+ * here and the assistant surfaces on the /assistants page. Returns `phoneSkipped: true` when the
+ * pulled phone number was already linked to another assistant/org (unique constraint) and was
+ * therefore dropped while keeping the rest of the mirror.
  */
 async function mirrorDefaultAssistant(
   orgId: string,
@@ -155,11 +184,11 @@ async function mirrorDefaultAssistant(
   } | null,
   result: {
     assistantId: string;
-    phoneNumber: string;
-    phoneNumberId: string;
-    knowledgeBaseId?: string;
+    phoneNumber?: string | null;
+    phoneNumberId?: string | null;
+    knowledgeBaseId?: string | null;
   },
-): Promise<{ id: string }> {
+): Promise<{ id: string; phoneSkipped: boolean }> {
   const existing = await prisma.assistant.findFirst({
     where: { organizationId: orgId },
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
@@ -167,7 +196,7 @@ async function mirrorDefaultAssistant(
   const data = {
     provider: cfg?.provider ?? "vapi",
     providerAssistantId: result.assistantId,
-    providerPhoneNumberId: result.phoneNumberId,
+    providerPhoneNumberId: result.phoneNumberId ?? null,
     providerPhoneNumber: result.phoneNumber || null,
     providerKnowledgeBaseId: result.knowledgeBaseId ?? null,
     greeting: cfg?.greeting ?? null,
@@ -178,12 +207,45 @@ async function mirrorDefaultAssistant(
     lastSyncedAt: new Date(),
     syncError: null,
   };
-  if (existing) {
-    return prisma.assistant.update({ where: { id: existing.id }, data });
+  const write = (d: typeof data) =>
+    existing
+      ? prisma.assistant.update({ where: { id: existing.id }, data: d })
+      : prisma.assistant.create({
+          data: { organizationId: orgId, name: orgName, isDefault: true, ...d },
+        });
+
+  let phoneSkipped = false;
+  let assistant;
+  try {
+    assistant = await write(data);
+  } catch (e) {
+    // providerPhoneNumber / providerPhoneNumberId are @unique — if the pulled number is already
+    // linked to another assistant/org, drop the phone fields and keep the rest of the mirror.
+    if ((e as { code?: string }).code === "P2002") {
+      phoneSkipped = true;
+      assistant = await write({
+        ...data,
+        providerPhoneNumber: null,
+        providerPhoneNumberId: null,
+      });
+    } else {
+      throw e;
+    }
   }
-  return prisma.assistant.create({
-    data: { organizationId: orgId, name: orgName, isDefault: true, ...data },
+
+  // Link the org's synced tools (those mirrored to a provider id) to this assistant.
+  const orgToolRows = await prisma.vapiTool.findMany({
+    where: { organizationId: orgId, vapiToolId: { not: null } },
+    select: { id: true },
   });
+  for (const tr of orgToolRows) {
+    await prisma.assistantTool.upsert({
+      where: { assistantId_toolId: { assistantId: assistant.id, toolId: tr.id } },
+      update: {},
+      create: { organizationId: orgId, assistantId: assistant.id, toolId: tr.id },
+    });
+  }
+  return { id: assistant.id, phoneSkipped };
 }
 
 /** Provision (idempotent): create/reuse Vapi resources and mirror every id locally. */
@@ -199,6 +261,8 @@ export async function provisionOrganization(
   const tools = await prisma.vapiTool.findMany({
     where: { organizationId: orgId },
   });
+  // Per-assistant config + existing provider ids live on the default Assistant now.
+  const def = await getDefaultAssistant(orgId);
 
   const provider = getVoiceProvider();
   const providerApiKey = await resolveProviderKey(orgId);
@@ -211,16 +275,17 @@ export async function provisionOrganization(
       publicApiBaseUrl: env.PUBLIC_API_BASE_URL,
       providerApiKey,
       assistant: {
-        greeting: cfg?.greeting ?? undefined,
-        prompt: cfg?.prompt ?? undefined,
-        voice: cfg?.voice ?? undefined,
-        llmModel: cfg?.llmModel ?? undefined,
+        name: def?.name ?? org.name,
+        greeting: def?.greeting ?? undefined,
+        prompt: def?.prompt ?? undefined,
+        voice: def?.voice ?? undefined,
+        llmModel: def?.llmModel ?? undefined,
       },
       existing: {
-        assistantId: cfg?.vapiAssistantId ?? undefined,
-        phoneNumberId: cfg?.vapiPhoneNumberId ?? undefined,
-        phoneNumber: cfg?.vapiPhoneNumber ?? undefined,
-        knowledgeBaseId: cfg?.vapiKnowledgeBaseId ?? undefined,
+        assistantId: def?.providerAssistantId ?? undefined,
+        phoneNumberId: def?.providerPhoneNumberId ?? undefined,
+        phoneNumber: def?.providerPhoneNumber ?? undefined,
+        knowledgeBaseId: def?.providerKnowledgeBaseId ?? undefined,
         providerOrgId: cfg?.vapiOrgId ?? undefined,
         toolIds: tools
           .filter((t) => t.vapiToolId)
@@ -228,19 +293,14 @@ export async function provisionOrganization(
       },
     });
 
+    // OrgVapiConfig only tracks the org-level connection now (the Vapi org id + sync status).
     await prisma.orgVapiConfig.update({
       where: { organizationId: orgId },
       data: {
-        vapiAssistantId: result.assistantId,
-        vapiPhoneNumberId: result.phoneNumberId,
-        vapiPhoneNumber: result.phoneNumber || null,
-        vapiKnowledgeBaseId: result.knowledgeBaseId ?? null,
         vapiOrgId: result.providerOrgId ?? null,
         syncStatus: "synced",
         lastSyncedAt: new Date(),
         syncError: null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        vapiRaw: (result.raw ?? null) as any,
       },
     });
 
@@ -264,25 +324,21 @@ export async function provisionOrganization(
       });
     }
 
-    // Mirror into the canonical Assistant table + select the provisioned tools for it.
-    const assistantRow = await mirrorDefaultAssistant(orgId, org.name, cfg, result);
-    const orgToolRows = await prisma.vapiTool.findMany({
-      where: { organizationId: orgId, vapiToolId: { not: null } },
-      select: { id: true },
-    });
-    for (const tr of orgToolRows) {
-      await prisma.assistantTool.upsert({
-        where: {
-          assistantId_toolId: { assistantId: assistantRow.id, toolId: tr.id },
-        },
-        update: {},
-        create: {
-          organizationId: orgId,
-          assistantId: assistantRow.id,
-          toolId: tr.id,
-        },
-      });
-    }
+    // Mirror into the canonical Assistant table + link the org's synced tools to it.
+    await mirrorDefaultAssistant(
+      orgId,
+      org.name,
+      def
+        ? {
+            provider: def.provider,
+            greeting: def.greeting,
+            prompt: def.prompt,
+            voice: def.voice,
+            llmModel: def.llmModel,
+          }
+        : null,
+      result,
+    );
 
     await recordSyncLog({
       organizationId: orgId,
@@ -328,13 +384,20 @@ export async function reconcileOrganization(
     where: { organizationId: orgId },
   });
   if (!cfg) throw AppError.notFound("Org config not found");
+  const def = await getDefaultAssistant(orgId);
   const provider = getVoiceProvider();
   const providerApiKey = await resolveProviderKey(orgId);
   const { status } = await provider.reconcile({
-    assistantId: cfg.vapiAssistantId ?? undefined,
-    phoneNumberId: cfg.vapiPhoneNumberId ?? undefined,
+    assistantId: def?.providerAssistantId ?? undefined,
+    phoneNumberId: def?.providerPhoneNumberId ?? undefined,
     providerApiKey,
   });
+  if (def) {
+    await prisma.assistant.update({
+      where: { id: def.id },
+      data: { syncStatus: status, lastSyncedAt: new Date() },
+    });
+  }
   await prisma.orgVapiConfig.update({
     where: { organizationId: orgId },
     data: { syncStatus: status, lastSyncedAt: new Date() },
@@ -445,86 +508,97 @@ export async function syncOrganizationFromVapi(
     where: { organizationId: orgId },
   });
   if (!cfg) throw AppError.notFound("Org config not found");
+  const org = await prisma.organization.findUnique({ where: { id: orgId } });
 
   const provider = getVoiceProvider();
   const providerApiKey = await resolveProviderKey(orgId);
   const startedAt = new Date();
 
   try {
+    const def = await getDefaultAssistant(orgId);
     const snap = await provider.pullOrgData({
       organizationId: orgId,
-      assistantId: cfg.vapiAssistantId ?? undefined,
-      phoneNumberId: cfg.vapiPhoneNumberId ?? undefined,
+      assistantId: def?.providerAssistantId ?? undefined,
+      phoneNumberId: def?.providerPhoneNumberId ?? undefined,
       providerApiKey,
       allowAdopt: !!cfg.vapiPrivateKeyEnc,
     });
 
-    // FULL REFLECT: Vapi is the source of truth — OVERWRITE the editable assistant config.
+    // FULL REFLECT: Vapi is the source of truth. Per-assistant config (greeting/prompt/voice/
+    // llmModel + provider ids) is written to the Assistant table via mirrorDefaultAssistant below;
+    // OrgVapiConfig only tracks the org-level connection (Vapi org id + sync status).
     const changedFields: string[] = [];
-    const data: Record<string, unknown> = {
+    if (snap.assistant) {
+      const cmp = (
+        key: "greeting" | "prompt" | "voice" | "llmModel",
+        next: string | null | undefined,
+      ) => {
+        const prior = (def?.[key] as string | null | undefined) ?? null;
+        if (prior !== (next ?? null)) changedFields.push(key);
+      };
+      cmp("greeting", snap.assistant.greeting);
+      cmp("prompt", snap.assistant.prompt);
+      cmp("voice", snap.assistant.voice);
+      cmp("llmModel", snap.assistant.llmModel);
+    }
+
+    const orgData: Record<string, unknown> = {
       syncStatus: "synced",
       lastSyncedAt: new Date(),
       syncError: null,
     };
-    if (snap.assistant) {
-      data.vapiAssistantId = snap.assistant.assistantId;
-      const setField = (
-        key: "greeting" | "prompt" | "voice" | "llmModel",
-        current: string | null,
-        next: string | null | undefined,
-      ) => {
-        const v = next ?? null;
-        data[key] = v;
-        if ((current ?? null) !== v) changedFields.push(key);
-      };
-      setField("greeting", cfg.greeting, snap.assistant.greeting);
-      setField("prompt", cfg.prompt, snap.assistant.prompt);
-      setField("voice", cfg.voice, snap.assistant.voice);
-      setField("llmModel", cfg.llmModel, snap.assistant.llmModel);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data.vapiRaw = (snap.assistant.raw ?? null) as any;
-    }
-    if (snap.phoneNumber) {
-      data.vapiPhoneNumberId = snap.phoneNumber.id;
-      if (snap.phoneNumber.number) data.vapiPhoneNumber = snap.phoneNumber.number;
-    }
-    if (snap.knowledgeBaseId) data.vapiKnowledgeBaseId = snap.knowledgeBaseId;
-    if (snap.providerOrgId) data.vapiOrgId = snap.providerOrgId;
-
-    let phoneSkipped = false;
-    try {
-      await prisma.orgVapiConfig.update({
-        where: { organizationId: orgId },
-        data,
-      });
-    } catch (e) {
-      // vapiPhoneNumber is @unique — if the pulled number is already linked to another
-      // org, skip the phone fields and keep the rest of the sync rather than failing.
-      if ((e as { code?: string }).code === "P2002") {
-        logger.warn("Sync: phone number already in use by another org; skipping it", {
-          orgId,
-        });
-        phoneSkipped = true;
-        delete data.vapiPhoneNumber;
-        delete data.vapiPhoneNumberId;
-        await prisma.orgVapiConfig.update({
-          where: { organizationId: orgId },
-          data,
-        });
-      } else {
-        throw e;
-      }
-    }
+    if (snap.providerOrgId) orgData.vapiOrgId = snap.providerOrgId;
+    await prisma.orgVapiConfig.update({
+      where: { organizationId: orgId },
+      data: orgData,
+    });
 
     // Backfill: INSERT ONLY calls we don't already have (never overwrite existing calls).
     const importedCalls = await importNewCalls(orgId, snap.calls);
     // Reflect the assistant's tools from Vapi.
     const toolChanges = await reflectTools(orgId, snap.tools ?? []);
 
+    // Mirror the synced assistant into the canonical Assistant table (source of truth for
+    // per-assistant config + provider ids) so it surfaces on /assistants.
+    let phoneSkipped = false;
+    if (snap.assistant) {
+      const mirror = await mirrorDefaultAssistant(
+        orgId,
+        org?.name ?? "Assistant",
+        {
+          provider: "vapi",
+          greeting: snap.assistant.greeting ?? null,
+          prompt: snap.assistant.prompt ?? null,
+          voice: snap.assistant.voice ?? null,
+          llmModel: snap.assistant.llmModel ?? null,
+        },
+        {
+          assistantId: snap.assistant.assistantId,
+          phoneNumber: snap.phoneNumber?.number ?? null,
+          phoneNumberId: snap.phoneNumber?.id ?? null,
+          knowledgeBaseId: snap.knowledgeBaseId ?? null,
+        },
+      );
+      phoneSkipped = mirror.phoneSkipped;
+    }
+
+    // Reflect EVERY account assistant into the portal so they all appear on /assistants (the single
+    // mirror above only covers the org's primary/default assistant). Best-effort — never aborts sync.
+    let assistantsCreated = 0;
+    try {
+      assistantsCreated = (await reflectAssistantsFromVapi(orgId)).created;
+    } catch (e) {
+      logger.warn("Sync: reflect-all assistants failed", {
+        orgId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     const configChanged = changedFields.length > 0;
     const toolsChanged =
       toolChanges.created + toolChanges.updated + toolChanges.removed > 0;
-    const changed = importedCalls > 0 || configChanged || toolsChanged;
+    const changed =
+      importedCalls > 0 || configChanged || toolsChanged || assistantsCreated > 0;
 
     const parts: string[] = [
       `imported ${importedCalls} call${importedCalls === 1 ? "" : "s"}`,
@@ -535,6 +609,7 @@ export async function syncOrganizationFromVapi(
         `tools +${toolChanges.created}/~${toolChanges.updated}/-${toolChanges.removed}`,
       );
     }
+    if (assistantsCreated > 0) parts.push(`assistants +${assistantsCreated}`);
     if (phoneSkipped) parts.push("phone skipped (in use)");
     const summary = changed
       ? `${prefix} — ${parts.join("; ")}`
@@ -552,6 +627,7 @@ export async function syncOrganizationFromVapi(
         configChanged,
         changedFields,
         tools: toolChanges,
+        assistantsCreated,
         phoneSkipped,
         changed,
         auto,
@@ -584,8 +660,9 @@ export async function syncOrganizationFromVapi(
 
 /**
  * Reset everything Vapi-derived for an org back to a clean slate, KEEPING the saved API key.
- * Clears mirrored ids + synced assistant config, deletes imported calls and sync history, and
- * clears each tool's Vapi mirror id. Used to wipe stale/fake data (e.g. left over from fake mode).
+ * Clears the org-level connection status + each assistant's provider mirror ids (assistants keep
+ * their name/config), deletes imported calls and sync history, and clears each tool's Vapi mirror
+ * id. Used to wipe stale/fake data (e.g. left over from fake mode).
  */
 export async function resetOrgVapiData(orgId: string): Promise<VapiSettings> {
   const cfg = await prisma.orgVapiConfig.findUnique({
@@ -593,24 +670,29 @@ export async function resetOrgVapiData(orgId: string): Promise<VapiSettings> {
   });
   if (!cfg) throw AppError.notFound("Org config not found");
 
+  // Org-level connection status (keep vapiPrivateKeyEnc / vapiKeyLast4 / vapiPublicKey).
   await prisma.orgVapiConfig.update({
     where: { organizationId: orgId },
     data: {
-      // Mirrored identifiers + status (keep vapiPrivateKeyEnc / vapiKeyLast4).
-      vapiAssistantId: null,
-      vapiPhoneNumberId: null,
-      vapiPhoneNumber: null,
-      vapiKnowledgeBaseId: null,
       vapiOrgId: null,
-      vapiRaw: Prisma.DbNull,
       lastSyncedAt: null,
       syncError: null,
       syncStatus: "pending",
-      // Synced assistant config.
-      greeting: null,
-      prompt: null,
-      voice: null,
-      llmModel: null,
+    },
+  });
+
+  // Disconnect each assistant from Vapi (clear provider mirror ids) but keep its name + config.
+  await prisma.assistant.updateMany({
+    where: { organizationId: orgId },
+    data: {
+      providerAssistantId: null,
+      providerPhoneNumberId: null,
+      providerPhoneNumber: null,
+      providerKnowledgeBaseId: null,
+      providerRaw: Prisma.DbNull,
+      lastSyncedAt: null,
+      syncError: null,
+      syncStatus: "pending",
     },
   });
 
@@ -638,15 +720,13 @@ export async function getVapiSettings(orgId: string): Promise<VapiSettings> {
   });
   if (!cfg) throw AppError.notFound("Org config not found");
   const tools = await listTools(orgId);
+  // The Status tab's mirror ids reflect the org's default assistant (canonical per-assistant store).
+  const def = await getDefaultAssistant(orgId);
   return {
-    greeting: cfg.greeting,
-    prompt: cfg.prompt,
-    voice: cfg.voice,
-    llmModel: cfg.llmModel,
-    vapiAssistantId: cfg.vapiAssistantId,
-    vapiPhoneNumberId: cfg.vapiPhoneNumberId,
-    vapiPhoneNumber: cfg.vapiPhoneNumber,
-    vapiKnowledgeBaseId: cfg.vapiKnowledgeBaseId,
+    vapiAssistantId: def?.providerAssistantId ?? null,
+    vapiPhoneNumberId: def?.providerPhoneNumberId ?? null,
+    vapiPhoneNumber: def?.providerPhoneNumber ?? null,
+    vapiKnowledgeBaseId: def?.providerKnowledgeBaseId ?? null,
     vapiOrgId: cfg.vapiOrgId,
     syncStatus: cfg.syncStatus as VapiSettings["syncStatus"],
     lastSyncedAt: cfg.lastSyncedAt?.toISOString() ?? null,
@@ -669,12 +749,9 @@ export async function updateVapiSettings(
   });
   if (!cfg) throw AppError.notFound("Org config not found");
 
-  // Handle the per-customer key: validate before storing; never echo plaintext.
+  // OrgVapiConfig is the org-level connection only: the key + the browser public key. Per-assistant
+  // config (greeting/prompt/voice/llmModel) is edited on the Assistants page (assistants.service).
   const data: Record<string, unknown> = {};
-  if (input.greeting !== undefined) data.greeting = input.greeting;
-  if (input.prompt !== undefined) data.prompt = input.prompt;
-  if (input.voice !== undefined) data.voice = input.voice;
-  if (input.llmModel !== undefined) data.llmModel = input.llmModel;
   if (input.vapiPublicKey !== undefined) {
     data.vapiPublicKey = input.vapiPublicKey || null;
   }
@@ -697,34 +774,6 @@ export async function updateVapiSettings(
     data,
   });
 
-  // Push assistant config changes to the provider if it's already provisioned.
-  if (cfg.vapiAssistantId) {
-    try {
-      const providerApiKey = await resolveProviderKey(orgId);
-      await getVoiceProvider().updateAssistant({
-        organizationId: orgId,
-        assistantId: cfg.vapiAssistantId,
-        greeting: input.greeting,
-        prompt: input.prompt,
-        voice: input.voice,
-        llmModel: input.llmModel,
-        providerApiKey,
-      });
-      await prisma.orgVapiConfig.update({
-        where: { organizationId: orgId },
-        data: { syncStatus: "synced", lastSyncedAt: new Date(), syncError: null },
-      });
-    } catch (e) {
-      await prisma.orgVapiConfig.update({
-        where: { organizationId: orgId },
-        data: {
-          syncStatus: "failed",
-          syncError: e instanceof Error ? e.message : String(e),
-        },
-      });
-    }
-  }
-
   return getVapiSettings(orgId);
 }
 
@@ -734,108 +783,18 @@ export async function testVapiKey(
   return getVoiceProvider().validateApiKey(apiKey);
 }
 
-/** List the org's Vapi-account assistants + which one it currently uses. */
-export async function listOrgAssistants(orgId: string): Promise<{
-  assistants: { id: string; name: string | null }[];
-  activeAssistantId: string | null;
-}> {
-  const cfg = await prisma.orgVapiConfig.findUnique({
-    where: { organizationId: orgId },
-  });
-  if (!cfg) throw AppError.notFound("Org config not found");
-  const providerApiKey = await resolveProviderKey(orgId);
-  const list = await getVoiceProvider().listAssistants({ providerApiKey });
-  return {
-    assistants: list.map((a) => ({ id: a.assistantId, name: a.name ?? null })),
-    activeAssistantId: cfg.vapiAssistantId,
-  };
-}
-
-/**
- * Make `assistantId` this org's active assistant: pull its config from Vapi and OVERWRITE the
- * editable fields (explicit switch), mirror its phone/KB/ids, and import its calls. Keeps the key.
- */
-export async function setActiveAssistant(
-  orgId: string,
-  assistantId: string,
-  triggeredBy?: string,
-): Promise<VapiSettings> {
-  const cfg = await prisma.orgVapiConfig.findUnique({
-    where: { organizationId: orgId },
-  });
-  if (!cfg) throw AppError.notFound("Org config not found");
-  const providerApiKey = await resolveProviderKey(orgId);
-  const startedAt = new Date();
-
-  const snap = await getVoiceProvider().pullOrgData({
-    organizationId: orgId,
-    assistantId,
-    providerApiKey,
-    allowAdopt: false,
-  });
-
-  const data: Record<string, unknown> = {
-    vapiAssistantId: assistantId,
-    syncStatus: "synced",
-    lastSyncedAt: new Date(),
-    syncError: null,
-  };
-  if (snap.assistant) {
-    data.greeting = snap.assistant.greeting ?? null;
-    data.prompt = snap.assistant.prompt ?? null;
-    data.voice = snap.assistant.voice ?? null;
-    data.llmModel = snap.assistant.llmModel ?? null;
-    data.vapiKnowledgeBaseId = snap.assistant.knowledgeBaseId ?? null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    data.vapiRaw = (snap.assistant.raw ?? null) as any;
-  }
-  if (snap.phoneNumber) {
-    data.vapiPhoneNumberId = snap.phoneNumber.id;
-    if (snap.phoneNumber.number) data.vapiPhoneNumber = snap.phoneNumber.number;
-  }
-  if (snap.providerOrgId) data.vapiOrgId = snap.providerOrgId;
-
-  try {
-    await prisma.orgVapiConfig.update({ where: { organizationId: orgId }, data });
-  } catch (e) {
-    // vapiPhoneNumber is @unique — skip phone fields if it collides with another org.
-    if ((e as { code?: string }).code === "P2002") {
-      delete data.vapiPhoneNumber;
-      delete data.vapiPhoneNumberId;
-      await prisma.orgVapiConfig.update({
-        where: { organizationId: orgId },
-        data,
-      });
-    } else {
-      throw e;
-    }
-  }
-
-  const importedCalls = await importNewCalls(orgId, snap.calls);
-  const toolChanges = await reflectTools(orgId, snap.tools ?? []);
-  await recordSyncLog({
-    organizationId: orgId,
-    type: "resync",
-    status: "success",
-    summary: `Switched active assistant to ${snap.assistant?.name ?? assistantId}; imported ${importedCalls} new call${importedCalls === 1 ? "" : "s"}; tools +${toolChanges.created}/~${toolChanges.updated}/-${toolChanges.removed}`,
-    details: { assistantId, importedCalls, tools: toolChanges },
-    triggeredBy: triggeredBy ?? null,
-    startedAt,
-  });
-
-  return getVapiSettings(orgId);
-}
-
 /**
  * Background poller target: FULLY REFLECT Vapi into the portal for every org that has its own key +
- * an active assistant (config + tools + new calls). Per-org failures are logged and skipped; every
- * run is recorded in sync history (via syncOrganizationFromVapi).
+ * a provisioned default assistant (config + tools + new calls). Per-org failures are logged and
+ * skipped; every run is recorded in sync history (via syncOrganizationFromVapi).
  */
 export async function reflectAllOrgsFromVapi(): Promise<
   { orgId: string; imported: number }[]
 > {
+  // Every org with its own Vapi key — including ones with NO assistants yet, so the poller
+  // bootstraps them: sync discovers + reflects their account assistants on the first cycle.
   const cfgs = await prisma.orgVapiConfig.findMany({
-    where: { vapiPrivateKeyEnc: { not: null }, vapiAssistantId: { not: null } },
+    where: { vapiPrivateKeyEnc: { not: null } },
     select: { organizationId: true },
   });
   const results: { orgId: string; imported: number }[] = [];

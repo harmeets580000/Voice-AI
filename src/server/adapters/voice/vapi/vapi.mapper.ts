@@ -58,6 +58,17 @@ export function parseInboundToolCall(
   const message = asObj(body.message);
   const organizationId = resolveOrgId(req, message);
 
+  // Attribute the call to one of the org's assistants (per-assistant scoping). Same envelope as
+  // the call-ended payload: prefer message.assistant.id, fall back to message.call.assistantId.
+  const assistant = asObj(message.assistant);
+  const callObj = asObj(message.call);
+  const providerAssistantId =
+    typeof assistant.id === "string"
+      ? assistant.id
+      : typeof callObj.assistantId === "string"
+        ? callObj.assistantId
+        : undefined;
+
   // Vapi may send either `toolCallList: [{id,name,arguments}]` or
   // `toolCalls: [{id, function:{name, arguments}}]`. Support both.
   const list = Array.isArray(message.toolCallList)
@@ -86,6 +97,7 @@ export function parseInboundToolCall(
 
   return {
     organizationId,
+    providerAssistantId,
     toolCallId,
     toolName: toolName as ToolName,
     args,

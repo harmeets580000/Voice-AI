@@ -1,10 +1,11 @@
 /**
  * Next.js instrumentation hook — runs once when the Node server boots.
  *
- * Starts the background auto-sync poller that imports new Vapi calls for every keyed org with an
- * active assistant, so calls show up without a public webhook or manual "Sync from Vapi". Gated to
- * the real `vapi` provider (never re-imports fake data) and off in tests. Safe-by-design: the import
- * is insert-only and per-org keyed (see organizations.service `autoSyncAllOrgCalls`).
+ * Starts the background auto-sync poller that reflects each keyed org's Vapi account into the portal
+ * — new calls AND its assistants (so they appear on /assistants without a manual "Sync from Vapi") —
+ * including orgs that have no assistants yet (it bootstraps them). Gated to the real `vapi` provider
+ * (never re-imports fake data) and off in tests. Safe-by-design: call import is insert-only and the
+ * poller is per-org keyed (see organizations.service `reflectAllOrgsFromVapi`).
  */
 
 export async function register() {

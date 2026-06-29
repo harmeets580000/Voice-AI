@@ -35,6 +35,8 @@ export const CUSTOMER_DATA_MODELS = new Set<string>([
   "Assistant",
   "AssistantTool",
   "AssistantKnowledgeFile",
+  "AssistantService",
+  "AssistantStaff",
 ]);
 
 type AnyArgs = Record<string, unknown> & {

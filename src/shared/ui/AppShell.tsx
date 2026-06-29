@@ -17,12 +17,11 @@ import {
   BookOpen,
   Wrench,
   Bot,
-  Settings,
   HelpCircle,
   Building2,
   FlaskConical,
+  ShieldCheck,
   ChevronDown,
-  LogOut,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@features/auth/AuthProvider";
@@ -32,7 +31,8 @@ import {
   ActingAsBanner,
 } from "@features/organizations/OrgSwitcher";
 import { Logo } from "./Logo";
-import { Spinner, Badge, cx } from "./primitives";
+import { ProfileMenu } from "./ProfileMenu";
+import { Spinner, cx } from "./primitives";
 
 type NavItem = { href: string; label: string; icon: LucideIcon };
 type NavGroup = { heading?: string; items: NavItem[] };
@@ -44,56 +44,66 @@ type NavSection = {
   placeholder?: string;
 };
 
-// Two top-level sections — Inbound (the live AI receptionist) and Outbound (coming soon).
-// Within Inbound, ordered by the real setup dependency chain: build the bottom-up (services →
-// staff → schedules → knowledge → tools) before an assistant can answer, then day-to-day ops.
-// Dashboard / Account / Super-admin are cross-cutting and sit outside the two sections.
-const NAV_SECTIONS: NavSection[] = [
-  { groups: [{ items: [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }] }] },
-  {
+const LIBRARY: NavItem[] = [
+  { href: "/services", label: "Services", icon: Scissors },
+  { href: "/staff", label: "Staff", icon: Users },
+  { href: "/schedules", label: "Schedules", icon: Clock },
+  { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
+  { href: "/tools", label: "Tools", icon: Wrench },
+];
+const OPERATIONS: NavItem[] = [
+  { href: "/calls", label: "Calls", icon: Phone },
+  { href: "/bookings", label: "Bookings", icon: CalendarCheck },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/customers", label: "Customers", icon: Contact },
+];
+
+// The sidebar is role-aware. Org users live in Inbound (their own org): the Assistant is the hub, the
+// Library group holds the shared building blocks it selects from, Operations is live data, and Help
+// explains the inbound-call flow. Super-admins get a dedicated "Super admin" section first (platform
+// dashboard + Vapi settings/tester) and use Inbound when acting as a specific org. Dashboard lives under
+// Inbound for org users and under Super admin for super-admins.
+function buildNavSections(isSuper: boolean): NavSection[] {
+  const inbound: NavSection = {
     title: "Inbound",
     icon: PhoneIncoming,
     groups: [
       {
-        heading: "Setup",
         items: [
-          { href: "/services", label: "Services", icon: Scissors },
-          { href: "/staff", label: "Staff", icon: Users },
-          { href: "/schedules", label: "Schedules", icon: Clock },
-          { href: "/knowledge", label: "Knowledge Base", icon: BookOpen },
-          { href: "/tools", label: "Tools", icon: Wrench },
+          ...(isSuper
+            ? []
+            : [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }]),
           { href: "/assistants", label: "Assistants", icon: Bot },
         ],
       },
-      {
-        heading: "Operations",
-        items: [
-          { href: "/calls", label: "Calls", icon: Phone },
-          { href: "/bookings", label: "Bookings", icon: CalendarCheck },
-          { href: "/calendar", label: "Calendar", icon: CalendarDays },
-          { href: "/customers", label: "Customers", icon: Contact },
-        ],
-      },
+      { heading: "Library", items: LIBRARY },
+      { heading: "Operations", items: OPERATIONS },
+      { items: [{ href: "/help", label: "Help", icon: HelpCircle }] },
     ],
-  },
-  {
+  };
+  const outbound: NavSection = {
     title: "Outbound",
     icon: PhoneOutgoing,
     groups: [],
     placeholder: "Coming soon",
-  },
-];
+  };
+  if (!isSuper) return [inbound, outbound];
 
-// Pinned to the bottom of the sidebar (utility nav), separated from the feature sections above.
-const ACCOUNT_NAV: NavItem[] = [
-  { href: "/settings", label: "Settings", icon: Settings },
-  { href: "/help", label: "Help", icon: HelpCircle },
-];
-
-const SUPER_NAV: NavItem[] = [
-  { href: "/organizations", label: "Organizations", icon: Building2 },
-  { href: "/vapi-tester", label: "Vapi Tester", icon: FlaskConical },
-];
+  const superAdmin: NavSection = {
+    title: "Super admin",
+    icon: ShieldCheck,
+    groups: [
+      {
+        items: [
+          { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+          { href: "/organizations", label: "Vapi Settings", icon: Building2 },
+          { href: "/vapi-tester", label: "Vapi Tester", icon: FlaskConical },
+        ],
+      },
+    ],
+  };
+  return [superAdmin, inbound, outbound];
+}
 
 function NavHeading({ children }: { children: React.ReactNode }) {
   return (
@@ -167,22 +177,15 @@ function NavLink({
   );
 }
 
-function initials(nameOrEmail: string) {
-  const base = nameOrEmail.split("@")[0];
-  const parts = base.split(/[.\s_-]+/).filter(Boolean);
-  return (parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "");
-}
-
 /** Authenticated shell: redirects to /login when not signed in; renders top bar + nav. */
 const NAV_COLLAPSE_KEY = "navCollapsedSections";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, logout } = useAuth();
+  const { user, loading } = useAuth();
   const router = useRouter();
 
-  // Collapsible nav sections (Inbound/Outbound), persisted across reloads. The nav only renders
-  // after the auth loading gate (client-side), so reading localStorage in the lazy initializer is
-  // safe — no SSR/hydration mismatch.
+  // Collapsible nav sections, persisted across reloads. The nav only renders after the auth loading
+  // gate (client-side), so reading localStorage in the lazy initializer is safe — no hydration mismatch.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
@@ -221,6 +224,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
   if (!user) return null;
 
+  const sections = buildNavSections(user.role === Role.SUPER_ADMIN);
+
   return (
     <div className="min-h-screen bg-bg">
       <ActingAsBanner />
@@ -229,11 +234,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Logo />
           <OrgSwitcher />
         </div>
+        <ProfileMenu />
       </header>
       <div className="flex">
         <nav className="sticky top-[57px] flex h-[calc(100vh-57px)] w-56 shrink-0 flex-col border-r border-border">
           <ul className="themed-scrollbar flex-1 space-y-0.5 overflow-y-auto p-3">
-            {NAV_SECTIONS.map((section, si) => {
+            {sections.map((section, si) => {
               const isCollapsed = !!section.title && collapsed.has(section.title);
               return (
                 <Fragment key={section.title ?? `s${si}`}>
@@ -268,53 +274,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </ul>
-
-          {/* Utility nav (Account + Super-admin) pinned to the bottom, above the profile. */}
-          <ul className="space-y-0.5 border-t border-border p-3">
-            {ACCOUNT_NAV.map((n) => (
-              <li key={n.href}>
-                <NavLink {...n} />
-              </li>
-            ))}
-            {user.role === Role.SUPER_ADMIN && (
-              <>
-                <NavHeading>Super-admin</NavHeading>
-                {SUPER_NAV.map((n) => (
-                  <li key={n.href}>
-                    <NavLink {...n} />
-                  </li>
-                ))}
-              </>
-            )}
-          </ul>
-
-          {/* Profile block pinned to the sidebar bottom */}
-          <div className="border-t border-border p-3">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold uppercase text-on-accent">
-                {initials(user.name || user.email)}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-text">
-                  {user.name || user.email.split("@")[0]}
-                </div>
-                <div className="mt-0.5">
-                  <Badge tone="accent">{user.role.replace("_", " ")}</Badge>
-                </div>
-              </div>
-              <button
-                onClick={() => void logout().then(() => router.replace("/login"))}
-                aria-label="Log out"
-                title="Log out"
-                className="shrink-0 rounded-lg p-2 text-muted transition-colors hover:bg-surface hover:text-danger"
-              >
-                <LogOut size={17} />
-              </button>
-            </div>
-            <div className="mt-1 truncate px-0.5 text-xs text-faint">
-              {user.email}
-            </div>
-          </div>
         </nav>
         <main className="min-w-0 flex-1 p-6">{children}</main>
       </div>

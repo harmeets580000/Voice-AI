@@ -52,15 +52,10 @@ export type UpdateToolRequest = z.infer<typeof UpdateToolRequest>;
 export const ToolsResponse = z.object({ tools: z.array(VapiToolDTO) });
 export type ToolsResponse = z.infer<typeof ToolsResponse>;
 
-/** Read view of a customer's Vapi config (super-admin only). */
+/** Read view of a customer's Vapi connection + status (super-admin only). Per-assistant config
+ * (greeting/prompt/voice/llmModel) lives on the Assistants page, not here. */
 export const VapiSettings = z.object({
-  // Editable assistant config.
-  greeting: z.string().nullable(),
-  prompt: z.string().nullable(),
-  voice: z.string().nullable(),
-  llmModel: z.string().nullable(),
-
-  // Read-only mirrored identifiers + status.
+  // Read-only mirrored identifiers + status (sourced from the org's default assistant).
   vapiAssistantId: z.string().nullable(),
   vapiPhoneNumberId: z.string().nullable(),
   vapiPhoneNumber: z.string().nullable(),
@@ -89,10 +84,6 @@ export const VapiSettingsResponse = z.object({ settings: VapiSettings });
 export type VapiSettingsResponse = z.infer<typeof VapiSettingsResponse>;
 
 export const UpdateVapiSettingsRequest = z.object({
-  greeting: z.string().optional(),
-  prompt: z.string().optional(),
-  voice: z.string().optional(),
-  llmModel: z.string().optional(),
   /** Write-only. If provided, stored encrypted; never echoed back. Empty string clears it. */
   privateKey: z.string().optional(),
   /** Browser-safe Vapi PUBLIC key (not a secret) for the web-call simulator. */
@@ -100,26 +91,6 @@ export const UpdateVapiSettingsRequest = z.object({
 });
 export type UpdateVapiSettingsRequest = z.infer<
   typeof UpdateVapiSettingsRequest
->;
-
-/** Active-assistant selector: list the account's assistants + which one this org uses. */
-export const AssistantSummary = z.object({
-  id: z.string(),
-  name: z.string().nullable(),
-});
-export type AssistantSummary = z.infer<typeof AssistantSummary>;
-
-export const AssistantListResponse = z.object({
-  assistants: z.array(AssistantSummary),
-  activeAssistantId: z.string().nullable(),
-});
-export type AssistantListResponse = z.infer<typeof AssistantListResponse>;
-
-export const SetActiveAssistantRequest = z.object({
-  assistantId: z.string().min(1),
-});
-export type SetActiveAssistantRequest = z.infer<
-  typeof SetActiveAssistantRequest
 >;
 
 export const TestKeyRequest = z.object({ apiKey: z.string().min(1) });
