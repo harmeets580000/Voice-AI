@@ -43,3 +43,13 @@ export const CURATED_MODELS: ModelOption[] = [
   },
   { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (Google)", provider: "google" },
 ];
+
+/**
+ * The LLM provider Vapi should use for a given model id (e.g. "openai" | "anthropic" | "google").
+ * Looked up from CURATED_MODELS; defaults to "openai" for unknown ids so the assistant still works.
+ * Used by the Vapi adapter so an Anthropic/Google assistant isn't silently rewritten to OpenAI.
+ */
+export function providerForModel(modelId?: string | null): string {
+  if (!modelId) return "openai";
+  return CURATED_MODELS.find((m) => m.id === modelId)?.provider ?? "openai";
+}

@@ -91,6 +91,44 @@ async function seedOrg(opts: {
   return org;
 }
 
+/**
+ * Ensure an org-admin login exists for an org WITHOUT touching its staff/services/schedules.
+ * Use this for slugs that may belong to a real org (so re-seeding never destroys real data).
+ */
+async function ensureLoginOnly(opts: {
+  slug: string;
+  name: string;
+  timezone: string;
+  adminEmail: string;
+}) {
+  const passwordHash = await hashPassword(DEMO_PASSWORD);
+  let org = await prisma.organization.findUnique({ where: { slug: opts.slug } });
+  if (!org) {
+    org = await prisma.organization.create({
+      data: {
+        slug: opts.slug,
+        name: opts.name,
+        timezone: opts.timezone,
+        status: "active",
+        theme: { create: { tokens: {} as Prisma.InputJsonValue } },
+        vapiConfig: { create: {} },
+      },
+    });
+  }
+  await prisma.user.upsert({
+    where: { email: opts.adminEmail },
+    update: { organizationId: org.id, role: "org_admin" },
+    create: {
+      email: opts.adminEmail,
+      name: `${opts.name} Admin`,
+      passwordHash,
+      role: "org_admin",
+      organizationId: org.id,
+    },
+  });
+  return org;
+}
+
 async function main() {
   // Platform-level singletons.
   await prisma.platformTheme.upsert({
@@ -172,12 +210,23 @@ async function main() {
     ],
   });
 
+  // H8H login — NON-destructive. The `h8h-demo` slug belongs to a real org, so we only ensure the
+  // admin login exists (never wipe staff/services like seedOrg does). Creates a bare org only if
+  // none exists yet.
+  const orgH = await ensureLoginOnly({
+    slug: "h8h-demo",
+    name: "H8H Demo",
+    timezone: "America/Los_Angeles",
+    adminEmail: "admin@h8h.example.com",
+  });
+
   console.log("Seeded:", {
     superAdmin: "superadmin@example.com",
     password: DEMO_PASSWORD,
     orgs: [
       { name: orgA.name, slug: orgA.slug, admin: "admin@brightsmile.example.com" },
       { name: orgB.name, slug: orgB.slug, admin: "admin@sharpcuts.example.com" },
+      { name: orgH.name, slug: orgH.slug, admin: "admin@h8h.example.com" },
     ],
   });
 }

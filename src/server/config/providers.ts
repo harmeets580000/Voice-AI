@@ -10,9 +10,13 @@ import { VapiVoiceProvider } from "@server/adapters/voice/vapi/vapi.provider";
 import { FakeVoiceProvider } from "@server/adapters/voice/fake/fake.provider";
 import type { SimulatorLlm } from "@server/ports/simulator-llm.port";
 import { AnthropicSimulatorLlm } from "@server/adapters/llm/anthropic/anthropic.simulator";
+import type { EmailProvider } from "@server/ports/email.port";
+import { SendGridEmailProvider } from "@server/adapters/email/sendgrid/sendgrid.email";
+import { FakeEmailProvider } from "@server/adapters/email/fake/fake.email";
 
 let voiceProvider: VoiceProvider | null = null;
 let simulatorLlm: SimulatorLlm | null = null;
+let emailProvider: EmailProvider | null = null;
 
 /** Returns the active VoiceProvider, selected by env.VOICE_PROVIDER. */
 export function getVoiceProvider(): VoiceProvider {
@@ -43,4 +47,19 @@ export function getSimulatorLlm(): SimulatorLlm {
 /** Test/dev hook to inject a specific simulator LLM (e.g. a scripted FakeSimulatorLlm). */
 export function setSimulatorLlm(llm: SimulatorLlm): void {
   simulatorLlm = llm;
+}
+
+/** The active EmailProvider — SendGrid when SENDGRID_API_KEY is set, else the fake/log adapter. */
+export function getEmailProvider(): EmailProvider {
+  if (!emailProvider) {
+    emailProvider = env.SENDGRID_API_KEY
+      ? new SendGridEmailProvider()
+      : new FakeEmailProvider();
+  }
+  return emailProvider;
+}
+
+/** Test/dev hook to inject a specific email provider (e.g. a FakeEmailProvider for assertions). */
+export function setEmailProvider(provider: EmailProvider): void {
+  emailProvider = provider;
 }

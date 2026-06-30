@@ -52,6 +52,7 @@ function BookingsPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
   const [serviceModal, setServiceModal] = useState(false);
+  const [customer, setCustomer] = useState({ name: "", phone: "", email: "" });
 
   const { data: bookings, isLoading } = useQuery({
     queryKey: ["bookings"],
@@ -86,32 +87,41 @@ function BookingsPage() {
   }
   async function book(start: string) {
     try {
-      await api.post("/bookings", { serviceId, startDatetime: start });
+      await api.post("/bookings", {
+        serviceId,
+        startDatetime: start,
+        customerName: customer.name || undefined,
+        customerPhone: customer.phone || undefined,
+        customerEmail: customer.email || undefined,
+      });
       await qc.invalidateQueries({ queryKey: ["bookings"] });
       setSlots([]);
-      toast.success("Appointment booked");
+      setCustomer({ name: "", phone: "", email: "" });
+      toast.success("Appointment created (pending confirmation)");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Booking failed");
     }
   }
-  async function cancel(id: string) {
+  async function act(id: string, action: string, okMsg: string) {
     try {
-      await api.patch(`/bookings/${id}`, { action: "cancel" });
+      await api.patch(`/bookings/${id}`, { action });
       await qc.invalidateQueries({ queryKey: ["bookings"] });
-      toast.success("Booking cancelled");
+      toast.success(okMsg);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Cancel failed");
+      toast.error(e instanceof Error ? e.message : "Action failed");
     }
   }
 
   const statusTone = (s: string) =>
-    s === "booked"
+    s === "confirmed" || s === "booked"
       ? "accent"
-      : s === "cancelled"
-        ? "danger"
-        : s === "completed"
-          ? "success"
-          : "neutral";
+      : s === "pending"
+        ? "warning"
+        : s === "cancelled"
+          ? "danger"
+          : s === "completed"
+            ? "success"
+            : "neutral";
 
   const columns: Column<BookingRow>[] = [
     {
@@ -131,12 +141,50 @@ function BookingsPage() {
       key: "actions",
       header: "",
       align: "right",
-      render: (b) =>
-        b.status === "booked" ? (
-          <Button size="sm" variant="dangerGhost" onClick={() => cancel(b.id)}>
-            Cancel
-          </Button>
-        ) : null,
+      render: (b) => {
+        const active =
+          b.status === "pending" ||
+          b.status === "confirmed" ||
+          b.status === "booked";
+        if (!active) return null;
+        return (
+          <div className="flex justify-end gap-2">
+            {b.status === "pending" && (
+              <Button
+                size="sm"
+                onClick={() => act(b.id, "confirm", "Booking confirmed")}
+              >
+                Confirm
+              </Button>
+            )}
+            {(b.status === "confirmed" || b.status === "booked") && (
+              <>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => act(b.id, "complete", "Marked completed")}
+                >
+                  Complete
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => act(b.id, "no_show", "Marked no-show")}
+                >
+                  No-show
+                </Button>
+              </>
+            )}
+            <Button
+              size="sm"
+              variant="dangerGhost"
+              onClick={() => act(b.id, "cancel", "Booking cancelled")}
+            >
+              Cancel
+            </Button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -193,6 +241,41 @@ function BookingsPage() {
             >
               {finding ? "Finding…" : "Find slots"}
             </Button>
+          </div>
+        )}
+        {hasServices && (
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <Field label="Customer name">
+              <Input
+                value={customer.name}
+                onChange={(e) =>
+                  setCustomer((c) => ({ ...c, name: e.target.value }))
+                }
+                className="w-44"
+                placeholder="Optional"
+              />
+            </Field>
+            <Field label="Phone">
+              <Input
+                value={customer.phone}
+                onChange={(e) =>
+                  setCustomer((c) => ({ ...c, phone: e.target.value }))
+                }
+                className="w-40"
+                placeholder="Optional"
+              />
+            </Field>
+            <Field label="Email">
+              <Input
+                type="email"
+                value={customer.email}
+                onChange={(e) =>
+                  setCustomer((c) => ({ ...c, email: e.target.value }))
+                }
+                className="w-52"
+                placeholder="For confirmation email"
+              />
+            </Field>
           </div>
         )}
         {msg && <p className="mt-3 text-sm text-muted">{msg}</p>}

@@ -28,6 +28,7 @@ import { getVapiClient, VapiError } from "./vapi.client";
 import {
   CURATED_VOICES,
   CURATED_MODELS,
+  providerForModel,
 } from "@server/adapters/voice/voiceOptions";
 import {
   parseCallEnded,
@@ -54,6 +55,15 @@ function callEndedUrl(baseUrl: string, orgId: string, assistantId?: string): str
   return assistantId
     ? `${url}&assistant_id=${encodeURIComponent(assistantId)}`
     : url;
+}
+/**
+ * The Vapi `server` object for a webhook URL. When VAPI_WEBHOOK_SECRET is set, Vapi echoes it back
+ * as the `x-vapi-secret` header on every call, which our webhook routes verify (so tools can't be
+ * invoked by anyone who learns the URL). Omitted when unset so local dev still works.
+ */
+function serverObj(url: string): Record<string, unknown> {
+  const secret = env.VAPI_WEBHOOK_SECRET?.trim();
+  return secret ? { url, secret } : { url };
 }
 
 // The SDK request types are large and version-specific; we build plain request objects and
@@ -85,7 +95,7 @@ export class VapiVoiceProvider implements VoiceProvider {
       const created = await client.tools.create({
         type: "function",
         function: { name },
-        server: { url: toolsUrl(baseUrl, input.organizationId) },
+        server: serverObj(toolsUrl(baseUrl, input.organizationId)),
       });
       toolIds.push({ name, id: String(created.id) });
     }
@@ -100,7 +110,7 @@ export class VapiVoiceProvider implements VoiceProvider {
       name: input.assistant.name || input.organizationName,
       firstMessage: input.assistant.greeting,
       model: {
-        provider: "openai",
+        provider: providerForModel(input.assistant.llmModel),
         model: input.assistant.llmModel ?? "gpt-4o",
         messages: input.assistant.prompt
           ? [{ role: "system", content: input.assistant.prompt }]
@@ -110,9 +120,9 @@ export class VapiVoiceProvider implements VoiceProvider {
       voice: input.assistant.voice
         ? { provider: "vapi", voiceId: input.assistant.voice }
         : undefined,
-      server: {
-        url: callEndedUrl(baseUrl, input.organizationId, input.assistantId),
-      },
+      server: serverObj(
+        callEndedUrl(baseUrl, input.organizationId, input.assistantId),
+      ),
       metadata: {
         organization_id: input.organizationId,
         ...(input.assistantId ? { assistant_id: input.assistantId } : {}),
@@ -174,7 +184,7 @@ export class VapiVoiceProvider implements VoiceProvider {
       firstMessage: input.greeting,
       model: includeModel
         ? {
-            provider: "openai",
+            provider: providerForModel(input.llmModel),
             model: input.llmModel ?? "gpt-4o",
             messages: input.prompt
               ? [{ role: "system", content: input.prompt }]
@@ -183,6 +193,17 @@ export class VapiVoiceProvider implements VoiceProvider {
           }
         : undefined,
       voice: input.voice ? { provider: "vapi", voiceId: input.voice } : undefined,
+      // Refresh the call-ended webhook (URL + current secret) only when asked, so config-only
+      // updates don't clobber it. Our Assistant id is baked in for per-assistant attribution.
+      server: input.callEndedAssistantId
+        ? serverObj(
+            callEndedUrl(
+              env.PUBLIC_API_BASE_URL,
+              input.organizationId,
+              input.callEndedAssistantId,
+            ),
+          )
+        : undefined,
     };
     const raw = await client.assistants.update(input.assistantId, body);
     return { raw };
@@ -197,7 +218,7 @@ export class VapiVoiceProvider implements VoiceProvider {
         description: input.description,
         parameters: input.parameters,
       },
-      server: { url: input.serverUrl },
+      server: serverObj(input.serverUrl),
     });
     return { id: String(created.id), raw: created };
   }
@@ -212,7 +233,7 @@ export class VapiVoiceProvider implements VoiceProvider {
         description: input.description,
         parameters: input.parameters,
       },
-      server: { url: input.serverUrl },
+      server: serverObj(input.serverUrl),
     });
     return { raw };
   }
@@ -340,7 +361,7 @@ export class VapiVoiceProvider implements VoiceProvider {
       const created = await client.tools.create({
         type: "function",
         function: { name },
-        server: { url: toolsUrl(baseUrl, input.organizationId) },
+        server: serverObj(toolsUrl(baseUrl, input.organizationId)),
       });
       out.push({ name, id: String(created.id) });
     }

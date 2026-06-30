@@ -15,7 +15,7 @@ import {
   cx,
 } from "@shared/ui/primitives";
 import { useToast } from "@shared/ui/Toast";
-import { ArrowLeft, Star, Cloud, Trash2 } from "lucide-react";
+import { ArrowLeft, Star, Cloud, Trash2, RefreshCw } from "lucide-react";
 import type { AssistantResponse } from "@contracts/assistants";
 import type { VapiSettingsResponse } from "@contracts/vapi";
 import {
@@ -72,6 +72,15 @@ export function AssistantDetailPage({ assistantId }: { assistantId: string }) {
       toast.success("Provisioning complete");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Provision failed");
+    }
+  }
+  async function resync() {
+    try {
+      await api.post(`/organizations/${orgId}/assistants/${assistantId}/reconcile`);
+      await refresh();
+      toast.success("Re-synced to Vapi");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Re-sync failed");
     }
   }
   async function makeDefault() {
@@ -147,7 +156,15 @@ export function AssistantDetailPage({ assistantId }: { assistantId: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold text-text">{assistant.name}</h1>
               {assistant.isDefault && <Badge tone="accent">default</Badge>}
-              <Badge tone={syncTone(assistant.syncStatus)}>{assistant.syncStatus}</Badge>
+              <span
+                title={
+                  assistant.lastSyncedAt
+                    ? `Last synced ${new Date(assistant.lastSyncedAt).toLocaleString()}`
+                    : "Not synced yet"
+                }
+              >
+                <Badge tone={syncTone(assistant.syncStatus)}>{assistant.syncStatus}</Badge>
+              </span>
             </div>
             <p className="mt-0.5 text-xs text-muted">
               {assistant.providerPhoneNumber
@@ -174,6 +191,16 @@ export function AssistantDetailPage({ assistantId }: { assistantId: string }) {
             >
               Delete
             </Button>
+            {assistant.providerAssistantId && (
+              <Button
+                size="sm"
+                variant="secondary"
+                leftIcon={<RefreshCw size={14} />}
+                onClick={resync}
+              >
+                Re-sync to Vapi
+              </Button>
+            )}
             <Button size="sm" leftIcon={<Cloud size={14} />} onClick={provision}>
               Provision
             </Button>

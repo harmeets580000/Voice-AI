@@ -151,7 +151,7 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
     access: "write",
     builtin: true,
     description:
-      "Book an appointment for a customer in an open slot. Confirm the details with the caller first. startDatetime is ISO-8601 in the business timezone.",
+      "Book an appointment for a customer in an open slot. Confirm the details with the caller first, and ask for their email so we can send a confirmation. startDatetime is ISO-8601 in the business timezone. The appointment is created as pending until the business confirms it.",
     parameters: obj(
       {
         serviceName: str("Service name as the caller says it."),
@@ -159,6 +159,7 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
         startDatetime: str("Appointment start, ISO-8601 (e.g. 2026-07-01T15:00:00)."),
         customerName: str("Caller's name."),
         customerPhone: str("Caller's phone number."),
+        customerEmail: str("Caller's email address (for the confirmation email)."),
         notes: str("Any notes for the appointment."),
       },
       ["startDatetime"],
@@ -172,6 +173,7 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       const customer = await findOrCreateCustomer(orgId, {
         name: a.customerName,
         phone: a.customerPhone,
+        email: a.customerEmail,
       });
       try {
         const booking = await autoAssignAndBook(orgId, {
@@ -186,7 +188,8 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
           booked: true,
           bookingId: booking.id,
           start: booking.startDatetime.toISOString(),
-          message: "Your appointment is booked.",
+          message:
+            "Your appointment request is received and is pending confirmation. You'll get an email once it's confirmed.",
         };
       } catch (e) {
         if (e instanceof AppError && e.code === "conflict") {

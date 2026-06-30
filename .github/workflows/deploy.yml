@@ -1,0 +1,241 @@
+# Build the app into a container image, push it to Azure Container Registry (ACR),
+# and deploy it to Azure Container Apps (ACA). Auth uses GitHub OIDC (no stored secret).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ONE-TIME AZURE SETUP (run once, locally, by an account that can create app
+# registrations and assign roles):
+#
+#   # 1. App registration + service principal
+#   appId=$(az ad app create --display-name "github-voice-ai-deploy" --query appId -o tsv)
+#   az ad sp create --id "$appId"
+#
+#   # 2. Federated credential bound to THIS repo's main branch (passwordless OIDC)
+#   az ad app federated-credential create --id "$appId" --parameters '{
+#     "name": "github-main",
+#     "issuer": "https://token.actions.githubusercontent.com",
+#     "subject": "repo:<OWNER>/<REPO>:ref:refs/heads/main",
+#     "audiences": ["api://AzureADTokenExchange"]
+#   }'
+#   # (add a second credential with subject ...:environment:production etc. if needed)
+#
+#   # 3. Grant the SP Contributor on the subscription (so it can create the RG + all
+#   #    resources). Scope to a pre-made RG instead if you prefer least privilege.
+#   subId=$(az account show --query id -o tsv)
+#   az role assignment create --assignee "$appId" --role Contributor \
+#     --scope "/subscriptions/$subId"
+#
+# Then add the values below to the repo (Settings → Secrets and variables → Actions).
+#
+# REQUIRED SECRETS:
+#   AZURE_CLIENT_ID            (= $appId above)
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+#   DATABASE_URL              (your existing Postgres connection string)
+#   JWT_ACCESS_SECRET
+#   JWT_REFRESH_SECRET
+#   CREDENTIAL_ENCRYPTION_KEY (32-byte base64)
+#   VAPI_API_KEY
+#   VAPI_WEBHOOK_SECRET
+#   ANTHROPIC_API_KEY
+#   SENDGRID_API_KEY
+#
+# OPTIONAL VARIABLES (override the defaults in `env:` below; ACR_NAME must be globally unique):
+#   AZURE_RESOURCE_GROUP, AZURE_LOCATION, ACR_NAME, ACA_ENV, ACA_APP,
+#   EMAIL_FROM, VAPI_DEFAULT_AREA_CODE
+#
+# NOTE: the schema-sync step runs `prisma db push` against DATABASE_URL from a
+# GitHub-hosted runner, so the database must accept that connection (public DBs like
+# Neon/Supabase work as-is; a locked-down Azure Postgres needs a firewall rule).
+#
+# HARDENING UPGRADE: ACR pull here uses ACR admin credentials for simplicity. To use a
+# managed identity instead, grant the Container App's identity the `AcrPull` role and
+# switch the `registry set` step to `--identity system`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Avoid overlapping deploys of the same branch.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC token for azure/login
+  contents: read
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'voice-ai-rg' }}
+  LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+  ACR_NAME: ${{ vars.ACR_NAME || 'voiceaiacr' }}
+  ACA_ENV: ${{ vars.ACA_ENV || 'voice-ai-env' }}
+  ACA_APP: ${{ vars.ACA_APP || 'voice-ai-app' }}
+  IMAGE: ai-receptionist
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Sync the DB schema (no committed migrations yet → db push) ──
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Prisma db push (schema sync)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx prisma db push --skip-generate
+
+      # ── Authenticate to Azure via OIDC ──
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Provision (idempotent): resource group, ACR, Container Apps env ──
+      - name: Provision Azure resources
+        run: |
+          set -euo pipefail
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az extension add --name containerapp --upgrade --only-show-errors
+
+          echo "Registering resource providers (no-op if already registered)…"
+          az provider register -n Microsoft.App --wait
+          az provider register -n Microsoft.OperationalInsights --wait
+
+          echo "Resource group…"
+          az group create -n "$RESOURCE_GROUP" -l "$LOCATION" --only-show-errors
+
+          echo "Container registry…"
+          az acr show -n "$ACR_NAME" >/dev/null 2>&1 \
+            || az acr create -n "$ACR_NAME" -g "$RESOURCE_GROUP" \
+                 --sku Basic --admin-enabled true --only-show-errors
+
+          echo "Container Apps environment…"
+          az containerapp env show -n "$ACA_ENV" -g "$RESOURCE_GROUP" >/dev/null 2>&1 \
+            || az containerapp env create -n "$ACA_ENV" -g "$RESOURCE_GROUP" \
+                 -l "$LOCATION" --only-show-errors
+
+      # ── Build the image inside ACR (no Docker engine needed on the runner) ──
+      - name: Build & push image (az acr build)
+        run: |
+          set -euo pipefail
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE:$IMAGE_TAG" \
+            --image "$IMAGE:latest" \
+            .
+
+      # ── Create the Container App on first run; subsequent runs fall through to update ──
+      - name: Ensure Container App exists
+        run: |
+          set -euo pipefail
+          ACR_LOGIN_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          ACR_USERNAME=$(az acr credential show -n "$ACR_NAME" --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show -n "$ACR_NAME" --query "passwords[0].value" -o tsv)
+
+          if ! az containerapp show -n "$ACA_APP" -g "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            echo "Creating Container App $ACA_APP…"
+            az containerapp create \
+              -n "$ACA_APP" -g "$RESOURCE_GROUP" \
+              --environment "$ACA_ENV" \
+              --image "$ACR_LOGIN_SERVER/$IMAGE:$IMAGE_TAG" \
+              --registry-server "$ACR_LOGIN_SERVER" \
+              --registry-username "$ACR_USERNAME" \
+              --registry-password "$ACR_PASSWORD" \
+              --target-port 3000 \
+              --ingress external \
+              --min-replicas 1 --max-replicas 1 \
+              --only-show-errors
+          else
+            echo "Container App exists — refreshing registry credentials…"
+            az containerapp registry set \
+              -n "$ACA_APP" -g "$RESOURCE_GROUP" \
+              --server "$ACR_LOGIN_SERVER" \
+              --username "$ACR_USERNAME" \
+              --password "$ACR_PASSWORD" \
+              --only-show-errors
+          fi
+
+      # ── Push secrets, resolve the app's own URL, then deploy the new image + env ──
+      - name: Set secrets & deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          CREDENTIAL_ENCRYPTION_KEY: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
+          VAPI_API_KEY: ${{ secrets.VAPI_API_KEY }}
+          VAPI_WEBHOOK_SECRET: ${{ secrets.VAPI_WEBHOOK_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          EMAIL_FROM: ${{ vars.EMAIL_FROM || 'bookings@example.com' }}
+          VAPI_DEFAULT_AREA_CODE: ${{ vars.VAPI_DEFAULT_AREA_CODE }}
+        run: |
+          set -euo pipefail
+          ACR_LOGIN_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+
+          echo "Syncing secrets…"
+          az containerapp secret set -n "$ACA_APP" -g "$RESOURCE_GROUP" --only-show-errors --secrets \
+            database-url="$DATABASE_URL" \
+            jwt-access-secret="$JWT_ACCESS_SECRET" \
+            jwt-refresh-secret="$JWT_REFRESH_SECRET" \
+            credential-encryption-key="$CREDENTIAL_ENCRYPTION_KEY" \
+            vapi-api-key="$VAPI_API_KEY" \
+            vapi-webhook-secret="$VAPI_WEBHOOK_SECRET" \
+            anthropic-api-key="$ANTHROPIC_API_KEY" \
+            sendgrid-api-key="$SENDGRID_API_KEY"
+
+          # The app's public URL is only known after ingress exists — read it now and
+          # feed it back as PUBLIC_API_BASE_URL / WEB_ORIGIN (used for Vapi webhooks & CORS).
+          FQDN=$(az containerapp show -n "$ACA_APP" -g "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "App FQDN: https://$FQDN"
+
+          ENV_VARS=(
+            "NODE_ENV=production"
+            "PORT=3000"
+            "VOICE_PROVIDER=vapi"
+            "VAPI_BASE_URL=https://api.vapi.ai"
+            "SIMULATOR_MODEL=claude-opus-4-8"
+            "AUTO_SYNC_ENABLED=true"
+            "AUTO_SYNC_INTERVAL_SECONDS=60"
+            "EMAIL_FROM=$EMAIL_FROM"
+            "PUBLIC_API_BASE_URL=https://$FQDN"
+            "WEB_ORIGIN=https://$FQDN"
+            "DATABASE_URL=secretref:database-url"
+            "JWT_ACCESS_SECRET=secretref:jwt-access-secret"
+            "JWT_REFRESH_SECRET=secretref:jwt-refresh-secret"
+            "CREDENTIAL_ENCRYPTION_KEY=secretref:credential-encryption-key"
+            "VAPI_API_KEY=secretref:vapi-api-key"
+            "VAPI_WEBHOOK_SECRET=secretref:vapi-webhook-secret"
+            "ANTHROPIC_API_KEY=secretref:anthropic-api-key"
+            "SENDGRID_API_KEY=secretref:sendgrid-api-key"
+          )
+          # Only set the area code when provided (an empty one would break number provisioning).
+          if [ -n "${VAPI_DEFAULT_AREA_CODE:-}" ]; then
+            ENV_VARS+=("VAPI_DEFAULT_AREA_CODE=$VAPI_DEFAULT_AREA_CODE")
+          fi
+
+          echo "Deploying image $ACR_LOGIN_SERVER/$IMAGE:$IMAGE_TAG…"
+          az containerapp update \
+            -n "$ACA_APP" -g "$RESOURCE_GROUP" \
+            --image "$ACR_LOGIN_SERVER/$IMAGE:$IMAGE_TAG" \
+            --min-replicas 1 --max-replicas 1 \
+            --set-env-vars "${ENV_VARS[@]}" \
+            --only-show-errors
+
+          echo "Deployed. App URL: https://$FQDN"

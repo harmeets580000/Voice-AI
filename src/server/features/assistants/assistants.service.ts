@@ -21,7 +21,10 @@ import { logger } from "@server/platform/logging/logger";
 import { decryptSecret } from "@server/platform/crypto/secretBox";
 import { getVoiceProvider } from "@server/config/providers";
 import { recordSyncLog } from "@server/features/sync/sync-log.service";
-import { ensureBuiltinTools } from "@server/features/tools/tools.service";
+import {
+  ensureBuiltinTools,
+  ensureToolsProvisionedInVapi,
+} from "@server/features/tools/tools.service";
 import type { ToolName } from "@domain/enums";
 import type { AssistantDTO } from "@contracts/assistants";
 
@@ -355,6 +358,50 @@ export async function deleteAssistant(orgId: string, assistantId: string) {
   return { deleted: true as const };
 }
 
+/**
+ * Create-if-missing each of this assistant's selected tools in Vapi, then attach the full selected
+ * set to the provider assistant. No-op (returns) when the assistant isn't provisioned yet — its
+ * tools are attached at provision time. Updates the assistant's sync status to reflect the push.
+ */
+async function pushAssistantToolsToVapi(
+  orgId: string,
+  assistantId: string,
+  opts: { refresh?: boolean } = {},
+): Promise<void> {
+  const db = tenantDb(orgId);
+  const assistant = await db.assistant.findFirst({
+    where: { id: assistantId },
+    include: { tools: { select: { toolId: true } } },
+  });
+  if (!assistant) throw AppError.notFound("Assistant not found");
+  if (!assistant.providerAssistantId) return; // attach happens at provision time
+
+  const providerApiKey = await resolveProviderKey(orgId);
+  // On a refresh (Re-sync), also re-push existing tools' config (URL + webhook secret).
+  const vapiToolIds = await ensureToolsProvisionedInVapi(
+    orgId,
+    assistant.tools.map((t) => t.toolId),
+    providerApiKey,
+    { refreshExisting: opts.refresh },
+  );
+  await getVoiceProvider().updateAssistant({
+    organizationId: orgId,
+    assistantId: assistant.providerAssistantId,
+    greeting: assistant.greeting ?? undefined,
+    prompt: assistant.prompt ?? undefined,
+    voice: assistant.voice ?? undefined,
+    llmModel: assistant.llmModel ?? undefined,
+    toolIds: vapiToolIds,
+    // On a refresh, also rewrite the call-ended webhook so it carries the current secret.
+    callEndedAssistantId: opts.refresh ? assistantId : undefined,
+    providerApiKey,
+  });
+  await db.assistant.update({
+    where: { id: assistantId },
+    data: { syncStatus: "synced", lastSyncedAt: new Date(), syncError: null },
+  });
+}
+
 /** Replace this assistant's selected tools with `toolIds` (org-library VapiTool ids). */
 export async function setAssistantTools(
   orgId: string,
@@ -380,6 +427,23 @@ export async function setAssistantTools(
     await db.assistantTool.createMany({
       data: toolIds.map((toolId) => ({ organizationId: orgId, assistantId, toolId })),
       skipDuplicates: true,
+    });
+  }
+
+  // Auto-sync the new selection to the provider. Best-effort: the local selection is always saved;
+  // a push failure surfaces via the assistant's syncStatus/syncError (the UI warns on it).
+  try {
+    await pushAssistantToolsToVapi(orgId, assistantId);
+  } catch (e) {
+    const syncError = e instanceof Error ? e.message : String(e);
+    logger.warn("setAssistantTools: pushing tool selection to provider failed", {
+      orgId,
+      assistantId,
+      error: syncError,
+    });
+    await db.assistant.update({
+      where: { id: assistantId },
+      data: { syncStatus: "failed", syncError },
     });
   }
   return getAssistant(orgId, assistantId);
@@ -628,35 +692,20 @@ export async function provisionAssistant(
   }
 }
 
-/** Attach exactly this assistant's currently-selected (synced) tools to the provider assistant. */
+/**
+ * Attach this assistant's currently-selected tools to the provider assistant, creating any that
+ * don't exist in Vapi yet (shared with the tool-save path). Requires the assistant to be provisioned.
+ */
 export async function reconcileAssistant(orgId: string, assistantId: string) {
   const db = tenantDb(orgId);
-  const assistant = await db.assistant.findFirst({
-    where: { id: assistantId },
-    include: { tools: { include: { tool: true } } },
-  });
+  const assistant = await db.assistant.findFirst({ where: { id: assistantId } });
   if (!assistant) throw AppError.notFound("Assistant not found");
   if (!assistant.providerAssistantId) {
     throw AppError.badRequest("Assistant is not provisioned yet");
   }
 
-  const toolIds = assistant.tools
-    .map((s) => s.tool.vapiToolId)
-    .filter((id): id is string => !!id);
-
-  await getVoiceProvider().updateAssistant({
-    organizationId: orgId,
-    assistantId: assistant.providerAssistantId,
-    greeting: assistant.greeting ?? undefined,
-    prompt: assistant.prompt ?? undefined,
-    voice: assistant.voice ?? undefined,
-    llmModel: assistant.llmModel ?? undefined,
-    toolIds,
-    providerApiKey: await resolveProviderKey(orgId),
-  });
-  await db.assistant.update({
-    where: { id: assistantId },
-    data: { syncStatus: "synced", lastSyncedAt: new Date(), syncError: null },
-  });
+  // Re-sync = full refresh: re-push every selected tool's config (incl. webhook secret) + the
+  // assistant's call-ended webhook, then re-attach the set.
+  await pushAssistantToolsToVapi(orgId, assistantId, { refresh: true });
   return getAssistant(orgId, assistantId);
 }

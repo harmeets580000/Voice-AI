@@ -33,6 +33,7 @@ export const BookAppointmentArgs = z
     startDatetime: z.string().min(1), // ISO 8601
     customerName: z.string().optional(),
     customerPhone: z.string().optional(),
+    customerEmail: z.string().optional(), // captured so we can email a confirmation
     notes: z.string().optional(),
   })
   .refine(hasService, { message: "serviceId or serviceName is required" });

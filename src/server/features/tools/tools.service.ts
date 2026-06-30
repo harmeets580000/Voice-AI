@@ -71,6 +71,109 @@ function toDTO(t: ToolRow): VapiToolDTO {
   };
 }
 
+/**
+ * Ensure each given org-library tool id exists in Vapi (create-if-missing), persisting its
+ * vapiToolId. Returns the provider tool ids for the selected tools, in input order. Best-effort
+ * per tool: a single createTool failure marks that VapiTool syncStatus=failed and is skipped.
+ *
+ * Shared by the per-assistant tool-save path so selecting a library tool actually creates it in
+ * Vapi (the same create logic `reconcileOrganizationTools` uses for the org-level sync).
+ */
+export async function ensureToolsProvisionedInVapi(
+  orgId: string,
+  toolIds: string[],
+  providerApiKey?: string,
+  opts: { refreshExisting?: boolean } = {},
+): Promise<string[]> {
+  if (toolIds.length === 0) return [];
+  const provider = getVoiceProvider();
+  const key = providerApiKey ?? (await resolveProviderKey(orgId));
+  const rows = await prisma.vapiTool.findMany({
+    where: { id: { in: toolIds }, organizationId: orgId },
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+
+  const out: string[] = [];
+  for (const id of toolIds) {
+    const t = byId.get(id);
+    if (!t) continue;
+    const serverUrlFor = () =>
+      t.kind === "builtin"
+        ? toolsWebhookUrl(orgId)
+        : (t.serverUrl ?? toolsWebhookUrl(orgId));
+    if (t.vapiToolId) {
+      // Exists in Vapi. On a refresh (Re-sync), push the current config — crucially the webhook
+      // `server` object (URL + secret) — so an existing tool picks up a newly-set VAPI_WEBHOOK_SECRET.
+      if (opts.refreshExisting) {
+        try {
+          await provider.updateTool({
+            toolId: t.vapiToolId,
+            organizationId: orgId,
+            name: t.name,
+            description: t.description ?? undefined,
+            parameters: t.parameters ?? undefined,
+            serverUrl: serverUrlFor(),
+            staticParams: { organization_id: orgId },
+            providerApiKey: key,
+          });
+          await prisma.vapiTool.update({
+            where: { id: t.id },
+            data: { syncStatus: "synced", lastSyncedAt: new Date(), syncError: null },
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.warn("ensureToolsProvisionedInVapi: updateTool (refresh) failed", {
+            orgId,
+            tool: t.name,
+            error: msg,
+          });
+          await prisma.vapiTool.update({
+            where: { id: t.id },
+            data: { syncStatus: "failed", syncError: msg },
+          });
+        }
+      }
+      out.push(t.vapiToolId);
+      continue;
+    }
+    const serverUrl = serverUrlFor();
+    try {
+      const created = await provider.createTool({
+        organizationId: orgId,
+        name: t.name,
+        description: t.description ?? undefined,
+        parameters: t.parameters ?? undefined,
+        serverUrl,
+        staticParams: { organization_id: orgId },
+        providerApiKey: key,
+      });
+      await prisma.vapiTool.update({
+        where: { id: t.id },
+        data: {
+          vapiToolId: created.id,
+          serverUrl,
+          syncStatus: "synced",
+          lastSyncedAt: new Date(),
+          syncError: null,
+        },
+      });
+      out.push(created.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.warn("ensureToolsProvisionedInVapi: createTool failed", {
+        orgId,
+        tool: t.name,
+        error: msg,
+      });
+      await prisma.vapiTool.update({
+        where: { id: t.id },
+        data: { syncStatus: "failed", syncError: msg },
+      });
+    }
+  }
+  return out;
+}
+
 /** Make sure the org's tool-library rows exist for the full catalog (idempotent). */
 export async function ensureBuiltinTools(orgId: string): Promise<void> {
   const existing = await prisma.vapiTool.findMany({

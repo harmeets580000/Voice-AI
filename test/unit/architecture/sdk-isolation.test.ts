@@ -45,4 +45,11 @@ describe("vendor SDK isolation (U-ISO / doc 03 rule 5)", () => {
       .filter((f) => !f.startsWith("server/adapters/llm/anthropic/"));
     expect(offenders).toEqual([]);
   });
+
+  it("@sendgrid/mail is imported only under adapters/email/sendgrid", () => {
+    const offenders = importsOf("@sendgrid/mail")
+      .map(rel)
+      .filter((f) => !f.startsWith("server/adapters/email/sendgrid/"));
+    expect(offenders).toEqual([]);
+  });
 });

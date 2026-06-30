@@ -13,6 +13,7 @@ const CreateStaff = z.object({
   email: z.string().email().optional(),
   phone: z.string().optional(),
   title: z.string().optional(),
+  serviceIds: z.array(z.string()).optional(),
 });
 
 export const GET = handleRoute(async (req) => {

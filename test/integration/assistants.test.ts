@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { prisma } from "@server/platform/db/client";
 import { hasTestDb, truncateAll, disconnect } from "./helpers/db";
 import { createOrg, createReadyOrg } from "./helpers/factories";
 import { setVoiceProvider, setSimulatorLlm } from "@server/config/providers";
@@ -47,6 +48,43 @@ describe.skipIf(!hasTestDb)("multi-assistant (M-A2/A6)", () => {
       .map((t) => t.id);
     const updated = await setAssistantTools(org.id, a.id, pick);
     expect(updated.selectedToolIds.slice().sort()).toEqual(pick.slice().sort());
+  });
+
+  it("saving a tool selection creates the missing tools in Vapi and attaches the full set", async () => {
+    const fake = new FakeVoiceProvider();
+    setVoiceProvider(fake);
+    const org = await createOrg();
+    const a = await createAssistant(org.id, { name: "Hub" });
+    await provisionAssistant(org.id, a.id); // sets providerAssistantId + creates the 3 built-ins
+
+    const tools = await listTools(org.id); // the full org catalog (built-ins + selectable)
+    const allIds = tools.map((t) => t.id);
+    // After provisioning, only the built-ins already exist in Vapi (have a vapiToolId).
+    const alreadyInVapi = (
+      await prisma.vapiTool.findMany({
+        where: { organizationId: org.id, vapiToolId: { not: null } },
+      })
+    ).length;
+
+    fake.calls.length = 0; // ignore the provisioning calls; assert only on the save
+    const updated = await setAssistantTools(org.id, a.id, allIds);
+
+    // Every selected tool is recorded against the assistant.
+    expect(updated.selectedToolIds.slice().sort()).toEqual(allIds.slice().sort());
+
+    // The not-yet-in-Vapi tools were created there (built-ins are reused, not re-created).
+    const createToolCalls = fake.calls.filter((c) => c.method === "createTool");
+    expect(createToolCalls.length).toBe(allIds.length - alreadyInVapi);
+
+    // Exactly one updateAssistant push carrying ALL selected provider tool ids.
+    const updateCalls = fake.calls.filter((c) => c.method === "updateAssistant");
+    expect(updateCalls.length).toBe(1);
+    const pushed = (updateCalls[0].input as { toolIds: string[] }).toolIds;
+    expect(pushed.length).toBe(allIds.length);
+
+    // Each selected library tool now has a provider id + synced status persisted.
+    const rows = await prisma.vapiTool.findMany({ where: { organizationId: org.id } });
+    expect(rows.every((r) => r.vapiToolId && r.syncStatus === "synced")).toBe(true);
   });
 
   it("the simulator runs the assistant's tools against real data", async () => {

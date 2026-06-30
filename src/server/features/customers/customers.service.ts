@@ -36,11 +36,14 @@ export async function findOrCreateCustomer(
   if (input.phone) {
     const existing = await findCustomerByPhone(orgId, input.phone);
     if (existing) {
-      // Fill in a name we didn't have before.
-      if (!existing.name && input.name) {
+      // Backfill details we didn't have before (name / email) so future bookings + confirmations work.
+      const data: { name?: string; email?: string } = {};
+      if (!existing.name && input.name) data.name = input.name;
+      if (!existing.email && input.email) data.email = input.email;
+      if (Object.keys(data).length > 0) {
         return tenantDb(orgId).customer.update({
           where: { id: existing.id },
-          data: { name: input.name },
+          data,
         });
       }
       return existing;

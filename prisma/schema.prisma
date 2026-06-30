@@ -27,7 +27,9 @@ enum OrgStatus {
 }
 
 enum BookingStatus {
-  booked
+  pending // new bookings — awaiting manual confirmation; reserves the slot
+  confirmed // confirmed by staff (sends the confirmation email); reserves the slot
+  booked // legacy synonym of confirmed (rows created before the lifecycle change)
   cancelled
   completed
   no_show
@@ -79,10 +81,11 @@ model Organization {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  users      User[]
-  staff      Staff[]
-  services   Service[]
-  schedules  StaffSchedule[]
+  users        User[]
+  staff        Staff[]
+  services     Service[]
+  staffServices StaffService[]
+  schedules    StaffSchedule[]
   timeOff    StaffTimeOff[]
   customers  Customer[]
   bookings   Booking[]
@@ -329,6 +332,9 @@ model Staff {
   timeOff   StaffTimeOff[]
   bookings  Booking[]
 
+  // Services this staff member can deliver. EMPTY = can deliver ALL (no restriction).
+  services StaffService[]
+
   // Assistants that selected this staff member (per-assistant scoping).
   assistantSelections AssistantStaff[]
 
@@ -349,11 +355,34 @@ model Service {
 
   bookings Booking[]
 
+  // Staff who can deliver this service (optional binding).
+  staff StaffService[]
+
   // Assistants that selected this service (per-assistant scoping).
   assistantSelections AssistantService[]
 
   @@index([organizationId])
   @@map("services")
+}
+
+/**
+ * Optional Staff <-> Service binding (which staff can deliver which service). A staff member with
+ * NO rows here can deliver ALL services (no restriction). Used to scope availability by capability.
+ */
+model StaffService {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  staffId        String
+  staff          Staff        @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  serviceId      String
+  service        Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([staffId, serviceId])
+  @@index([organizationId])
+  @@index([serviceId])
+  @@map("staff_services")
 }
 
 model StaffSchedule {
@@ -420,7 +449,7 @@ model Booking {
   service               Service?      @relation(fields: [serviceId], references: [id])
   startDatetime         DateTime
   endDatetime           DateTime
-  status                BookingStatus @default(booked)
+  status                BookingStatus @default(pending)
   source                BookingSource @default(phone)
   paymentStatus         String? // future (Phase 4)
   googleCalendarEventId String?

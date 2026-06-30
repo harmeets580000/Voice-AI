@@ -12,6 +12,11 @@ export const Role = {
 export type Role = (typeof Role)[keyof typeof Role];
 
 export const BookingStatus = {
+  /** New bookings start here — awaiting manual confirmation. Reserves the slot. */
+  PENDING: "pending",
+  /** Confirmed by staff (sends the confirmation email). Reserves the slot. */
+  CONFIRMED: "confirmed",
+  /** Legacy synonym of CONFIRMED for rows created before the lifecycle change. */
   BOOKED: "booked",
   CANCELLED: "cancelled",
   COMPLETED: "completed",

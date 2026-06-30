@@ -4,15 +4,9 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@shared/ui/AppShell";
 import { api } from "@shared/api/client";
-import {
-  PageContainer,
-  PageHeader,
-  Button,
-  Field,
-  Input,
-} from "@shared/ui/primitives";
+import { PageContainer, PageHeader, Button } from "@shared/ui/primitives";
 import { DataTable, type Column } from "@shared/ui/DataTable";
-import { Modal } from "@shared/ui/Modal";
+import { StaffModal, type StaffLike } from "@features/staff/StaffModal";
 import { useToast } from "@shared/ui/Toast";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 
@@ -22,6 +16,7 @@ interface Staff {
   email: string | null;
   phone: string | null;
   title: string | null;
+  serviceIds: string[];
 }
 
 export default function StaffRoute() {
@@ -32,15 +27,11 @@ export default function StaffRoute() {
   );
 }
 
-const empty = { name: "", email: "", phone: "", title: "" };
-
 function StaffPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Staff | null>(null);
-  const [form, setForm] = useState(empty);
-  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState<StaffLike | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["staff"],
@@ -49,40 +40,13 @@ function StaffPage() {
 
   function openAdd() {
     setEditing(null);
-    setForm(empty);
     setOpen(true);
   }
   function openEdit(s: Staff) {
     setEditing(s);
-    setForm({
-      name: s.name,
-      email: s.email ?? "",
-      phone: s.phone ?? "",
-      title: s.title ?? "",
-    });
     setOpen(true);
   }
 
-  async function save() {
-    setSaving(true);
-    try {
-      const body = {
-        name: form.name,
-        email: form.email || undefined,
-        phone: form.phone || undefined,
-        title: form.title || undefined,
-      };
-      if (editing) await api.patch(`/staff/${editing.id}`, body);
-      else await api.post("/staff", body);
-      await qc.invalidateQueries({ queryKey: ["staff"] });
-      setOpen(false);
-      toast.success(editing ? "Staff updated" : "Staff added");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  }
   async function remove(id: string) {
     try {
       await api.del(`/staff/${id}`);
@@ -98,6 +62,12 @@ function StaffPage() {
     { key: "title", header: "Title", render: (s) => s.title ?? "—" },
     { key: "email", header: "Email", render: (s) => s.email ?? "—" },
     { key: "phone", header: "Phone", render: (s) => s.phone ?? "—" },
+    {
+      key: "services",
+      header: "Services",
+      render: (s) =>
+        s.serviceIds.length === 0 ? "All" : `${s.serviceIds.length} selected`,
+    },
     {
       key: "actions",
       header: "",
@@ -149,49 +119,7 @@ function StaffPage() {
         }
       />
 
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={editing ? "Edit staff" : "Add staff"}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={save} disabled={saving || !form.name}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <Field label="Name" required>
-            <Input
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            />
-          </Field>
-          <Field label="Title">
-            <Input
-              value={form.title}
-              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            />
-          </Field>
-          <Field label="Email">
-            <Input
-              type="email"
-              value={form.email}
-              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-            />
-          </Field>
-          <Field label="Phone">
-            <Input
-              value={form.phone}
-              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-            />
-          </Field>
-        </div>
-      </Modal>
+      <StaffModal open={open} onClose={() => setOpen(false)} editing={editing} />
     </PageContainer>
   );
 }

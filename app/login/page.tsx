@@ -13,6 +13,7 @@ const DEMO_ACCOUNTS = [
   { label: "Super Admin", email: "superadmin@example.com", password: "Password123!" },
   { label: "Org Admin", email: "admin@gmail.com", password: "123123" },
   { label: "Staff", email: "user1@gmail.com", password: "123123" },
+  { label: "H8H Admin", email: "admin@h8h.example.com", password: "Password123!" },
 ];
 const SHOW_DEMO = process.env.NODE_ENV !== "production";
 

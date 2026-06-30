@@ -12,6 +12,7 @@ import {
   resolveAssistantIdByProviderId,
   getAssistantScope,
 } from "@server/features/assistants/assistants.service";
+import { env } from "@server/config/env";
 import { AppError } from "@server/platform/http/errors";
 import { logger } from "@server/platform/logging/logger";
 
@@ -21,8 +22,33 @@ function queryFromUrl(url: string): Record<string, string> {
   return out;
 }
 
+let warnedNoSecret = false;
+/**
+ * Verify Vapi's `x-vapi-secret` header against VAPI_WEBHOOK_SECRET. When the secret is configured,
+ * a missing/mismatched header is rejected with 401 so the tool/call webhooks can't be invoked by
+ * anyone who merely knows the URL. When unset (local dev) the check is skipped (warned once).
+ */
+export function verifyWebhookSecret(
+  req: Request,
+  expected: string | undefined = env.VAPI_WEBHOOK_SECRET?.trim(),
+): void {
+  if (!expected) {
+    if (!warnedNoSecret) {
+      logger.warn(
+        "VAPI_WEBHOOK_SECRET is not set — voice webhooks are unauthenticated. Set it to secure them.",
+      );
+      warnedNoSecret = true;
+    }
+    return;
+  }
+  if (req.headers.get("x-vapi-secret") !== expected) {
+    throw AppError.unauthorized("Invalid or missing webhook secret");
+  }
+}
+
 /** Handle an inbound tool-call webhook → run the tool, return the vendor response shape. */
 export async function handleToolWebhook(req: Request): Promise<unknown> {
+  verifyWebhookSecret(req);
   const provider = getVoiceProvider();
   const body = await req.json().catch(() => ({}));
   const query = queryFromUrl(req.url);
@@ -47,6 +73,7 @@ export async function handleToolWebhook(req: Request): Promise<unknown> {
 
 /** Handle an end-of-call webhook → persist the call record (idempotent). */
 export async function handleCallEndedWebhook(req: Request): Promise<void> {
+  verifyWebhookSecret(req);
   const provider = getVoiceProvider();
   const body = await req.json().catch(() => ({}));
   const query = queryFromUrl(req.url);

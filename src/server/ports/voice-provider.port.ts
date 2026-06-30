@@ -60,6 +60,12 @@ export interface UpdateAssistantInput {
   llmModel?: string;
   /** Attach this exact set of provider tool ids to the assistant (when provided). */
   toolIds?: string[];
+  /**
+   * Our Assistant row id. When provided, the adapter refreshes the assistant's call-ended
+   * `server` object (URL + current webhook secret) with this id baked in for per-assistant
+   * attribution. Omitted by config-only updates so the server object isn't touched.
+   */
+  callEndedAssistantId?: string;
   providerApiKey?: string;
 }
 

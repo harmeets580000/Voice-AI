@@ -20,6 +20,7 @@ import { AppError } from "@server/platform/http/errors";
 export const CUSTOMER_DATA_MODELS = new Set<string>([
   "Staff",
   "Service",
+  "StaffService",
   "StaffSchedule",
   "StaffTimeOff",
   "Customer",

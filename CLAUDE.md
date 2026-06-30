@@ -108,6 +108,15 @@ test/                    # vitest setup, test-db helpers, fake VoiceProvider, fi
   URL (`PUBLIC_API_BASE_URL`) via tunnel or deploy for live Vapi.
 - Per-customer Vapi private keys are stored **encrypted**; only last-4 is ever returned to the
   browser. The plaintext key never appears in any API response shape in `src/contracts/`.
+- `VAPI_WEBHOOK_SECRET` (optional): when set, the adapter puts it on every tool/assistant Vapi
+  `server.secret`, and the tool/call webhook routes reject any request whose `x-vapi-secret` header
+  doesn't match (`verifyWebhookSecret` in `src/server/channels/voiceWebhook.ts`). Unset = skipped in
+  local dev (warned once).
+- Email (booking confirmations): `SENDGRID_API_KEY` + `EMAIL_FROM`. New **`EmailProvider` port**
+  (`src/server/ports/email.port.ts`) with a **SendGrid adapter** (`@sendgrid/mail`, isolated under
+  `src/server/adapters/email/sendgrid/` — added to the sdk-isolation test) and a **fake/log adapter**
+  (default in dev/tests so nothing real sends without a key), bound in `src/server/config/providers.ts`
+  (`getEmailProvider`/`setEmailProvider`).
 - Node is currently **v25** (very new) — if a tool misbehaves, flag it; we may pin an LTS.
 
 ## Working agreement
@@ -116,6 +125,29 @@ test/                    # vitest setup, test-db helpers, fake VoiceProvider, fi
 - Tests are **mocked at the `VoiceProvider` port** — no real Vapi calls in the test suite.
 - After each task, run its "Done when" check (doc 03) before moving on.
 - Keep this file updated when a lasting architectural decision is made.
+
+## Booking, staff & scheduling decisions (post-Phase 1)
+
+- **Booking lifecycle:** `BookingStatus` = `pending → confirmed → completed` (+ `cancelled`,
+  `no_show`; `booked` kept as a **legacy synonym** of confirmed). New bookings default **`pending`**.
+  Slot-reservation set `ACTIVE_STATUSES` in `booking.engine.ts` = `[pending, confirmed, booked,
+  completed]` — **a pending booking reserves the slot** (double-book guard covers it). Transitions
+  live in the engine (`confirmBooking`/`completeBooking`/`markNoShow`); `confirmBooking` sends the
+  customer a confirmation email (best-effort, `booking.notifications.ts` → `EmailProvider`).
+- **Capture caller email:** `book_appointment` takes `customerEmail`; **every** booking path
+  find-or-creates a `Customer` (`findOrCreateCustomer`, which now backfills a missing name/email),
+  so anyone who books becomes a customer.
+- **Staff ↔ Service (optional):** `StaffService` join (in `CUSTOMER_DATA_MODELS`). EMPTY bindings =
+  staff can deliver ALL services. `getAvailability` narrows staff via
+  `filterStaffByServiceCapability` (staff.service.ts). Set per staff in `StaffModal`.
+- **Weekly schedule bulk:** `setStaffWeeklySchedule(orgId, staffId, days[])` (the grid is the source
+  of truth — upserts present days, deletes the rest) behind `PUT /api/schedules/bulk`; the
+  `/schedules` page is a weekly grid with quick-fill.
+- **Dynamic Vapi LLM provider:** `providerForModel(modelId)` (voiceOptions.ts) drives
+  `model.provider` in the adapter, so an Anthropic/Google assistant isn't rewritten to OpenAI.
+- **Inline add from the Assistant hub:** each picker tab has an "Add new" button opening a shared
+  create modal — `ServiceModal`/`StaffModal`/`KnowledgeModal`/`CustomToolModal` (the library pages
+  reuse the same components). A **Re-sync to Vapi** button (reconcile endpoint) sits by Provision.
 
 ## Build status (Phase 1 — all milestones coded)
 

@@ -1,0 +1,35 @@
+# Dependencies & build output (re-created inside the image)
+node_modules
+.next
+out
+
+# VCS / CI / editor
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# Local-only runtime data (uploads are ephemeral in the container)
+uploads
+
+# Secrets & local env — never copy into the build context
+.env
+.env.*
+!.env.example
+
+# Tests / coverage (not needed at runtime)
+coverage
+test
+**/*.test.ts
+**/*.test.tsx
+
+# Logs & misc
+npm-debug.log*
+yarn-error.log*
+*.log
+
+# Repo docs / planning markdown (not part of the app)
+README*.md
+0*-*.md
+CLAUDE.md

@@ -23,8 +23,17 @@ import {
   type ScheduleEntry,
   type Slot,
 } from "./availability";
+import { sendBookingConfirmationEmail } from "./booking.notifications";
+import { filterStaffByServiceCapability } from "@server/features/staff/staff.service";
 
-const ACTIVE_STATUSES = [BookingStatus.BOOKED, BookingStatus.COMPLETED];
+// Statuses that occupy a slot (block double-booking). A pending booking RESERVES the slot so two
+// callers can't grab the same time while one awaits confirmation. `booked` is the legacy synonym.
+const ACTIVE_STATUSES = [
+  BookingStatus.PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.BOOKED,
+  BookingStatus.COMPLETED,
+];
 
 async function getOrgTimezone(orgId: string): Promise<string> {
   const org = await prisma.organization.findUnique({
@@ -60,9 +69,15 @@ export async function getAvailability(
 
   const allowed = allowedStaffIds ? new Set(allowedStaffIds) : null;
   const staff = await db.staff.findMany({ where: { isActive: true } });
-  const staffIds = staff
+  const candidateIds = staff
     .map((s) => s.id)
     .filter((id) => !allowed || allowed.has(id));
+  // Restrict to staff who can deliver THIS service (staff with no service bindings = can do all).
+  const staffIds = await filterStaffByServiceCapability(
+    orgId,
+    serviceId,
+    candidateIds,
+  );
 
   const schedules = (await db.staffSchedule.findMany({
     where: { staffId: { in: staffIds } },
@@ -183,7 +198,7 @@ export async function autoAssignAndBook(
             customerId: input.customerId ?? null,
             startDatetime: start,
             endDatetime: end,
-            status: BookingStatus.BOOKED,
+            status: BookingStatus.PENDING,
             source: input.source ?? "phone",
             notes: input.notes ?? null,
           },
@@ -226,6 +241,44 @@ export async function cancelBooking(orgId: string, bookingId: string) {
   return db.booking.update({
     where: { id: bookingId },
     data: { status: BookingStatus.CANCELLED },
+  });
+}
+
+/**
+ * Confirm a pending booking → `confirmed`, then send the customer a confirmation email
+ * (best-effort — an email failure never rolls back the confirmation; see booking.notifications).
+ */
+export async function confirmBooking(orgId: string, bookingId: string) {
+  const db = tenantDb(orgId);
+  const existing = await db.booking.findFirst({ where: { id: bookingId } });
+  if (!existing) throw AppError.notFound("Booking not found");
+  const updated = await db.booking.update({
+    where: { id: bookingId },
+    data: { status: BookingStatus.CONFIRMED },
+  });
+  await sendBookingConfirmationEmail(orgId, bookingId);
+  return updated;
+}
+
+/** Mark a booking completed (the final lifecycle stage). */
+export async function completeBooking(orgId: string, bookingId: string) {
+  const db = tenantDb(orgId);
+  const existing = await db.booking.findFirst({ where: { id: bookingId } });
+  if (!existing) throw AppError.notFound("Booking not found");
+  return db.booking.update({
+    where: { id: bookingId },
+    data: { status: BookingStatus.COMPLETED },
+  });
+}
+
+/** Mark a booking as a no-show (frees the slot for future availability). */
+export async function markNoShow(orgId: string, bookingId: string) {
+  const db = tenantDb(orgId);
+  const existing = await db.booking.findFirst({ where: { id: bookingId } });
+  if (!existing) throw AppError.notFound("Booking not found");
+  return db.booking.update({
+    where: { id: bookingId },
+    data: { status: BookingStatus.NO_SHOW },
   });
 }
 

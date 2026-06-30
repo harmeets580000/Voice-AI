@@ -38,10 +38,19 @@ const EnvSchema = z.object({
   // create assistants WITHOUT a number (a number can be provisioned later). Vapi requires this to
   // purchase a free number.
   VAPI_DEFAULT_AREA_CODE: z.string().optional(),
+  // Shared secret echoed by Vapi as the `x-vapi-secret` header on tool/call webhooks. When set, the
+  // webhook routes reject any request missing/mismatching it (so tools can't be invoked by URL alone).
+  // Leave unset in local dev to skip verification.
+  VAPI_WEBHOOK_SECRET: z.string().optional().default(""),
 
   // Simulator LLM (Anthropic). Powers the per-assistant text-chat tester (Claude tool loop).
   ANTHROPIC_API_KEY: z.string().default(""),
   SIMULATOR_MODEL: z.string().default("claude-opus-4-8"),
+
+  // Email (SendGrid) — booking confirmation emails. When SENDGRID_API_KEY is unset, the fake/log
+  // adapter is used so nothing real is sent (dev/tests). EMAIL_FROM is the verified sender.
+  SENDGRID_API_KEY: z.string().default(""),
+  EMAIL_FROM: z.string().default("bookings@example.com"),
 
   // App
   PORT: z.coerce.number().default(3000),

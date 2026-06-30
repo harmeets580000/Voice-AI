@@ -16,6 +16,7 @@ const UpdateStaff = z.object({
   phone: z.string().optional(),
   title: z.string().optional(),
   isActive: z.boolean().optional(),
+  serviceIds: z.array(z.string()).optional(),
 });
 
 export const PATCH = handleRoute(async (req, ctx) => {
