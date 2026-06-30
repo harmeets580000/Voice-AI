@@ -59,6 +59,11 @@ jobs:
       - name: Unit tests (+ coverage on critical modules)
         run: npm run coverage
 
+      - name: Sync schema to the integration test schema (app_test)
+        # Integration tests run in a dedicated `app_test` schema; create its tables before
+        # running them (the bare `prisma db push` above only seeds the `public` schema).
+        run: npm run db:push:test
+
       - name: Integration tests (real Postgres, fake voice provider)
         run: npm run test:integration
 
