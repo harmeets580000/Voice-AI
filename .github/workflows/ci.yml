@@ -29,7 +29,8 @@ jobs:
       DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/ai_receptionist_test
       JWT_ACCESS_SECRET: ci-access-secret
       JWT_REFRESH_SECRET: ci-refresh-secret
-      CREDENTIAL_ENCRYPTION_KEY: Y2ktY2ktY2ktY2ktY2ktY2ktY2ktY2ktMzJieXRl
+      # base64 of "ci-test-credential-encryption-32" — decodes to exactly 32 bytes (AES-256-GCM).
+      CREDENTIAL_ENCRYPTION_KEY: Y2ktdGVzdC1jcmVkZW50aWFsLWVuY3J5cHRpb24tMzI=
       VOICE_PROVIDER: fake
 
     steps:
