@@ -171,7 +171,7 @@ jobs:
               --only-show-errors
           fi
 
-      # ── Push secrets, resolve the app's own URL, then deploy the new image + env ──
+      # ── Push   secrets, resolve the app's own URL, then deploy the new image + env ──
       - name: Set secrets & deploy
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
