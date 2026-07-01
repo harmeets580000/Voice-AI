@@ -22,6 +22,10 @@ export function periodToRange(
   const ms = days * 86_400_000;
   const to = now;
   const from = new Date(now.getTime() - ms);
+  // `to` bounds the display/day-bucketing range only. Current-window COUNT queries filter on
+  // `{ gte: from }` with NO upper bound: rows can't be created in the future, and capping at
+  // `lt: to` (= now, JS millisecond precision) would drop a row whose Postgres microsecond
+  // `createdAt` is a hair past the truncated `now` — a real, timing-dependent flaky under-count.
   return { days, from, to, prevFrom: new Date(from.getTime() - ms), prevTo: from };
 }
 
@@ -126,7 +130,7 @@ export async function getOrgDashboard(
     defaultAssistant,
   ] = await Promise.all([
     db.booking.findMany({
-      where: { createdAt: { gte: from, lt: to } },
+      where: { createdAt: { gte: from } },
       select: {
         id: true,
         createdAt: true,
@@ -143,11 +147,11 @@ export async function getOrgDashboard(
       select: { status: true, service: { select: { price: true } } },
     }),
     db.call.findMany({
-      where: { createdAt: { gte: from, lt: to } },
+      where: { createdAt: { gte: from } },
       select: { createdAt: true, endedReason: true, durationSeconds: true, cost: true },
     }),
     db.call.count({ where: { createdAt: { gte: prevFrom, lt: prevTo } } }),
-    db.customer.count({ where: { createdAt: { gte: from, lt: to } } }),
+    db.customer.count({ where: { createdAt: { gte: from } } }),
     db.customer.count({ where: { createdAt: { gte: prevFrom, lt: prevTo } } }),
     db.booking.findMany({
       where: { startDatetime: { gt: now }, status: "booked" },
@@ -331,7 +335,7 @@ export async function getPlatformDashboard(
         select: { id: true, name: true, status: true },
       }),
       prisma.booking.findMany({
-        where: { createdAt: { gte: from, lt: to } },
+        where: { createdAt: { gte: from } },
         select: {
           organizationId: true,
           createdAt: true,
@@ -344,11 +348,11 @@ export async function getPlatformDashboard(
         select: { status: true, service: { select: { price: true } } },
       }),
       prisma.call.findMany({
-        where: { createdAt: { gte: from, lt: to } },
+        where: { createdAt: { gte: from } },
         select: { organizationId: true, createdAt: true },
       }),
       prisma.call.count({ where: { createdAt: { gte: prevFrom, lt: prevTo } } }),
-      prisma.customer.count({ where: { createdAt: { gte: from, lt: to } } }),
+      prisma.customer.count({ where: { createdAt: { gte: from } } }),
       prisma.customer.count({ where: { createdAt: { gte: prevFrom, lt: prevTo } } }),
       prisma.orgVapiConfig.findMany({
         select: { organizationId: true, syncStatus: true },
