@@ -55,6 +55,49 @@ describe("Vapi mapper — tool calls (U-VAPI-01, U-VAPI-02)", () => {
     expect(out.args).toEqual({ staffId: "s1" });
   });
 
+  it("handles a toolCallList item whose name/arguments are nested under function (real Vapi shape)", () => {
+    // Regression: live Vapi sends `toolCallList` with OpenAI-shaped items (name under `function`),
+    // not a flat `{name}`. Reading the top-level `name` yielded "" → "Unknown tool: " failures.
+    const req = {
+      query: { organization_id: "orgA" },
+      body: {
+        message: {
+          type: "tool-calls",
+          toolCallList: [
+            {
+              id: "call_XJIBpwJKxsIgWUyh0al2UT6R",
+              type: "function",
+              function: {
+                name: "list_services",
+                arguments: JSON.stringify({}),
+              },
+            },
+          ],
+        },
+      },
+    };
+    const out = parseInboundToolCall(req);
+    expect(out.toolCallId).toBe("call_XJIBpwJKxsIgWUyh0al2UT6R");
+    expect(out.toolName).toBe(ToolName.LIST_SERVICES);
+    expect(out.args).toEqual({});
+  });
+
+  it("skips a leading item with no resolvable name and uses the next valid tool call", () => {
+    const out = parseInboundToolCall({
+      query: { organization_id: "orgA" },
+      body: {
+        message: {
+          toolCallList: [{ id: "empty" }],
+          toolCalls: [
+            { id: "call_2", function: { name: "list_staff", arguments: {} } },
+          ],
+        },
+      },
+    });
+    expect(out.toolCallId).toBe("call_2");
+    expect(out.toolName).toBe(ToolName.LIST_STAFF);
+  });
+
   it("reads org id from assistant metadata when no query param is present", () => {
     const out = parseInboundToolCall({
       body: {

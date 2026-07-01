@@ -69,8 +69,9 @@ export function parseInboundToolCall(
         ? callObj.assistantId
         : undefined;
 
-  // Vapi may send either `toolCallList: [{id,name,arguments}]` or
-  // `toolCalls: [{id, function:{name, arguments}}]`. Support both.
+  // Vapi may send the tool call under `toolCallList` or `toolCalls`, and each item may be
+  // either flat (`{id, name, arguments}`) or OpenAI-shaped (`{id, function:{name, arguments}}`).
+  // Read the name/arguments from the top level OR the nested `function` so we handle every shape.
   const list = Array.isArray(message.toolCallList)
     ? (message.toolCallList as Json[])
     : [];
@@ -82,17 +83,16 @@ export function parseInboundToolCall(
   let toolName = "";
   let args: Record<string, unknown> = {};
 
-  if (list.length > 0) {
-    const tc = list[0];
-    toolCallId = String(tc.id ?? "");
-    toolName = String(tc.name ?? "");
-    args = parseArgs(tc.arguments);
-  } else if (calls.length > 0) {
-    const tc = calls[0];
-    toolCallId = String(tc.id ?? "");
+  // Prefer the first item (across either array) that yields a non-empty tool name.
+  const candidates = [...list, ...calls];
+  for (const tc of candidates) {
     const fn = asObj(tc.function);
-    toolName = String(fn.name ?? "");
-    args = parseArgs(fn.arguments);
+    const name = String(tc.name ?? fn.name ?? "");
+    if (!name) continue;
+    toolCallId = String(tc.id ?? "");
+    toolName = name;
+    args = parseArgs(tc.arguments ?? fn.arguments);
+    break;
   }
 
   return {
