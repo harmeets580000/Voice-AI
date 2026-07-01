@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { verifyWebhookSecret } from "@server/channels/voiceWebhook";
+import { env } from "@server/config/env";
 
 /** Build a Request carrying (or omitting) the x-vapi-secret header. */
 function reqWith(secret?: string): Request {
@@ -26,6 +27,14 @@ describe("verifyWebhookSecret (webhook auth)", () => {
 
   it("skips verification when no secret is configured (local dev)", () => {
     expect(() => verifyWebhookSecret(reqWith(), "")).not.toThrow();
-    expect(() => verifyWebhookSecret(reqWith(), undefined)).not.toThrow();
+    // The no-arg path falls back to env.VAPI_WEBHOOK_SECRET. Drive it deterministically instead of
+    // depending on the ambient env (a developer's .env.local may set the secret; CI does not).
+    const original = env.VAPI_WEBHOOK_SECRET;
+    try {
+      env.VAPI_WEBHOOK_SECRET = "";
+      expect(() => verifyWebhookSecret(reqWith())).not.toThrow();
+    } finally {
+      env.VAPI_WEBHOOK_SECRET = original;
+    }
   });
 });

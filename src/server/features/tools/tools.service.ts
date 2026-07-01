@@ -28,6 +28,26 @@ import type {
  */
 const CATALOG_TOOLS = toolCatalog();
 
+/**
+ * Order-insensitive JSON serialization: sorts object keys recursively (arrays keep their order).
+ * Used to compare a stored JSONB value (whose key order Postgres does not preserve) against an
+ * in-memory catalog value without false "drift".
+ */
+function canonicalJson(value: unknown): string {
+  const normalize = (v: unknown): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map(normalize);
+    const obj = v as Record<string, unknown>;
+    return Object.keys(obj)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, k) => {
+        acc[k] = normalize(obj[k]);
+        return acc;
+      }, {});
+  };
+  return JSON.stringify(normalize(value));
+}
+
 function toolsWebhookUrl(orgId: string): string {
   return `${env.PUBLIC_API_BASE_URL}/api/webhook/voice/tools?organization_id=${encodeURIComponent(orgId)}`;
 }
@@ -207,8 +227,10 @@ export async function ensureBuiltinTools(orgId: string): Promise<void> {
   for (const b of CATALOG_TOOLS) {
     const row = byName.get(b.name);
     if (!row || row.kind === "custom") continue;
-    const paramsDrift =
-      JSON.stringify(row.parameters ?? null) !== JSON.stringify(b.parameters ?? null);
+    // Compare order-insensitively: a Postgres JSONB round-trip does NOT preserve object key order,
+    // so a plain JSON.stringify would read every already-synced row as "drifted" and re-flip it to
+    // `pending` on every listTools() call (which re-runs this heal), undoing a completed sync.
+    const paramsDrift = canonicalJson(row.parameters ?? null) !== canonicalJson(b.parameters ?? null);
     const descDrift = (row.description ?? "") !== (b.description ?? "");
     if (!paramsDrift && !descDrift) continue;
     await prisma.vapiTool.update({
