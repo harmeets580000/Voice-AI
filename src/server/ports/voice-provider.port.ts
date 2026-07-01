@@ -158,6 +158,12 @@ export interface VoiceOptionDTO {
   provider?: string;
 }
 
+/** A phone number available in the provider account (outbound from-number selection). */
+export interface ProviderPhoneNumberDTO {
+  id: string;
+  number: string; // E.164
+}
+
 /** A lightweight assistant listing (for the active-assistant selector). */
 export interface ProviderAssistantSummary {
   assistantId: string;
@@ -251,6 +257,10 @@ export interface VoiceProvider {
   listVoices(apiKey?: string): Promise<VoiceOptionDTO[]>;
   /** Available LLM models (curated; no universal list endpoint). */
   listModels(): Promise<VoiceOptionDTO[]>;
+  /** Phone numbers in the account (for the outbound from-number picker). */
+  listPhoneNumbers(input: {
+    providerApiKey?: string;
+  }): Promise<ProviderPhoneNumberDTO[]>;
 
   /**
    * Read-back: pull the org's current data FROM the provider (assistant config, phone

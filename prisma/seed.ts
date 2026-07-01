@@ -129,6 +129,83 @@ async function ensureLoginOnly(opts: {
   return org;
 }
 
+/**
+ * Enable Outbound Sales (Product 2) for a demo org and seed a little sample data (contacts, a
+ * from-number, an agent, one lead). Idempotent: product/number upserted; sample rows created once.
+ */
+async function seedOutbound(orgId: string) {
+  await prisma.orgProduct.upsert({
+    where: {
+      organizationId_product: { organizationId: orgId, product: "OUTBOUND_SALES" },
+    },
+    update: { status: "active", enabledAt: new Date() },
+    create: {
+      organizationId: orgId,
+      product: "OUTBOUND_SALES",
+      status: "active",
+      enabledAt: new Date(),
+    },
+  });
+  const existing = await prisma.outboundContact.count({
+    where: { organizationId: orgId },
+  });
+  if (existing === 0) {
+    const c1 = await prisma.outboundContact.create({
+      data: {
+        organizationId: orgId,
+        name: "Jordan Lee",
+        phone: "+14155551234",
+        email: "jordan@example.com",
+        tags: ["warm"],
+        source: "IMPORT",
+      },
+    });
+    await prisma.outboundContact.create({
+      data: {
+        organizationId: orgId,
+        name: "Sam Rivera",
+        phone: "+14155555678",
+        tags: ["cold"],
+        source: "IMPORT",
+      },
+    });
+    await prisma.outboundContact.create({
+      data: {
+        organizationId: orgId,
+        name: "Casey Kim",
+        phone: "+14155559012",
+        optOut: true,
+        source: "IMPORT",
+      },
+    });
+    await prisma.outboundAgent.create({
+      data: {
+        organizationId: orgId,
+        name: "Demo Sales Agent",
+        status: "ACTIVE",
+        persona: "Friendly SDR",
+        openingLine: "Hi, this is Alex from the team!",
+        providerPhoneNumber: "+14155550100",
+      },
+    });
+    await prisma.lead.create({
+      data: {
+        organizationId: orgId,
+        contactId: c1.id,
+        source: "MANUAL",
+        stage: "NEW",
+        value: new Prisma.Decimal(1500),
+      },
+    });
+  }
+
+  // Ensure the demo agent has a from-number so "Place call" works out of the box.
+  await prisma.outboundAgent.updateMany({
+    where: { organizationId: orgId, providerPhoneNumber: null },
+    data: { providerPhoneNumber: "+14155550100" },
+  });
+}
+
 async function main() {
   // Platform-level singletons.
   await prisma.platformTheme.upsert({
@@ -194,6 +271,9 @@ async function main() {
       organizationId: orgA.id,
     },
   });
+
+  // Enable Outbound Sales for the first demo org so the module is explorable after seeding.
+  await seedOutbound(orgA.id);
 
   const orgB = await seedOrg({
     slug: "sharp-cuts-barbershop",

@@ -164,6 +164,13 @@ export class FakeVoiceProvider implements VoiceProvider {
   async listModels() {
     return CURATED_MODELS;
   }
+  async listPhoneNumbers(input: { providerApiKey?: string }) {
+    this.record("listPhoneNumbers", input);
+    return [
+      { id: "pn_fake_1", number: "+15550000001" },
+      { id: "pn_fake_2", number: "+15550000002" },
+    ];
+  }
 
   async provisionTools(input: {
     organizationId: string;

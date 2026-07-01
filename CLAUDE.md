@@ -227,6 +227,64 @@ running IDE/dev server can lock the Prisma engine DLL and make `prisma generate`
 the generated client types are still updated; close the locking process and re-run to refresh the
 engine binary (correctness is unaffected).
 
+## Product 2 — Outbound Sales & Lead Gen (built: Q0–Q8)
+
+A **second product module** layered on the platform. Locked architectural decision: **Outbound is
+fully self-contained** — it shares only `Organization` + `User` + `Role` with the inbound
+Receptionist (plus the new product registry + portal theme). It does **not** reuse `Customer`,
+`Call`, `Booking`, `Staff`, or `Service`; it has its own contacts, call log, and scheduler. This is a
+deliberate override of the scope doc's "one database, zero duplication" thesis — accepted trade-offs:
+**no cross-product contact dedup** (a person can be both an inbound `Customer` and an outbound
+`OutboundContact`) and a **duplicated minimal scheduler**.
+
+- **Product registry (§A):** `ProductKey` (`AI_RECEPTIONIST` base/always-on, `OUTBOUND_SALES` opt-in)
+  + `OrgProduct` row per (org, product). `src/server/platform/registry/registry.service.ts`
+  (`listOrgProducts`/`isProductEnabled`/`assertProductEnabled`/`setProduct`). `GET/PUT /api/products`,
+  toggled at `/settings/products`. The Outbound nav section in `AppShell` renders only when enabled.
+- **Self-contained slice:** all backend lives in `src/server/features/outbound/**`; routes under
+  `app/api/outbound/**` go through **`withOutboundOrg(req)`** (`guard.ts`) = `withRequiredOrg` +
+  `assertProductEnabled(OUTBOUND_SALES)`, so every outbound API 403s when the module is off. All 13
+  new models are registered in `CUSTOMER_DATA_MODELS` and org-scoped via `tenantDb`.
+- **New models:** `OrgProduct`; `OutboundContact` (opt-out/DNC + tags/source/customFields **inline** —
+  no side table); `ContactImport`/`LeadImport`; `ContactSegment`; `OutboundAgent`+`OutboundAgentAction`
+  (**config-only** — actions persist intent, nothing executes, e.g. `MARK_DNC` mutates nothing; the
+  agent also carries the **from-number** — see below); `Campaign`+`CampaignContact`; `OutboundCall`
+  (the module's **own** QUEUED-stub call log, separate from the Vapi-mirrored `Call`);
+  `Lead`+`LeadActivity`; `OutboundMeeting`.
+- **From-number lives on the OutboundAgent, pulled from Vapi.** `OutboundAgent.providerPhoneNumber`
+  (+`providerPhoneNumberId`) is the call's caller-ID; there is **no standalone phone-number list**
+  (the old `OrgPhoneNumber` was removed). The agent editor's picker calls `GET /api/outbound/phone-numbers`
+  → `listOrgVapiNumbers` → the **`VoiceProvider.listPhoneNumbers`** port method (Vapi adapter uses
+  `client.phoneNumbers.list()`; fake returns a fixture), keyed by the org's Vapi key via the exported
+  `resolveProviderKey` (else platform key); manual entry is always allowed. One-off calls **require an
+  agent** (it supplies the script + number); campaign launch uses the campaign agent's number (null OK
+  for the stub). This is a deliberate, read-only softening of outbound's "no-Vapi" posture (SDK stays
+  isolated behind the port).
+- **Roles:** OWNER/ADMIN → `org_admin`; MEMBER (sales rep) → `org_staff`. Reps operate
+  (import/add/work leads, promote, place calls, convert); admins configure (agents/campaigns) and
+  delete. Enforced per-route via `assertRole` (RBAC matrix in the build plan).
+- **Compliance:** opt-out lives on `OutboundContact`; audiences (`segments.service.audienceWhere`) and
+  the one-off call path always exclude/hard-block opted-out contacts. **Known gap:** the inbound
+  Receptionist does not consult this opt-out (separate customer records) — close before any live
+  dialing (out of scope now; everything is stub, `OutboundCall` never dials).
+- **Launch governor (§D, stub):** `campaign.launch.ts` resolves the audience (opt-out excluded),
+  rejects over `LAUNCH_MAX_AUDIENCE` (default 1000), else generates `CampaignContact` + `QUEUED`
+  `OutboundCall` in batches of `LAUNCH_BATCH_SIZE` (default 200). **VOICE only**; non-VOICE rejected.
+  Env caps read at call time.
+- **Own scheduler (§F):** `meeting.engine.ts` `convertLeadToMeeting` books an `OutboundMeeting` with an
+  owner rep (a `User`) inside a **SERIALIZABLE** transaction with an overlap re-check (rep
+  double-book guard) — mirrors the inbound booking engine's pattern but on its own table.
+- **Frontend:** pages under `app/outbound/**` (Contacts, Segments, Agents, Campaigns, Leads,
+  Phone numbers, Sales dashboard); leads have a **table + native-HTML5-DnD Kanban**; CSV via
+  **`papaparse`** in the reusable `CsvImportModal` (client parse → column-map → preview → summary).
+  No `@dnd-kit` (native DnD used instead). Sales dashboard reuses `StatTile` + `src/features/dashboard/
+  charts.tsx`; connect-rate is a disabled placeholder.
+- **Events:** `LeadCreated`/`LeadStageChanged`/`CampaignLaunched` on the existing `eventBus`.
+- **Tests:** `test/integration/outbound-*.test.ts` (`P2-Q*` rows) — skip until a test DB is set, like
+  the Phase-1 suites. Static gates (`typecheck`/`lint`/`test`/`build`) pass. Seed enables
+  `OUTBOUND_SALES` for **Bright Smile Dental** + sample contacts/agent/lead (`seedOutbound` in
+  `prisma/seed.ts`). Uses `prisma db push` (no migration files).
+
 ## How to run it (once `.env.local` has DATABASE_URL etc.)
 
 ```

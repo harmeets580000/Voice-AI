@@ -17,6 +17,23 @@ export interface DomainEvents {
     serviceId: string | null;
     startDatetime: string;
   };
+  // Outbound Sales (Product 2)
+  LeadCreated: {
+    organizationId: string;
+    leadId: string;
+    source: string;
+  };
+  LeadStageChanged: {
+    organizationId: string;
+    leadId: string;
+    from: string;
+    to: string;
+  };
+  CampaignLaunched: {
+    organizationId: string;
+    campaignId: string;
+    queued: number;
+  };
 }
 
 type EventName = keyof DomainEvents;

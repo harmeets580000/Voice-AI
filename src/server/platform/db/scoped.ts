@@ -38,6 +38,20 @@ export const CUSTOMER_DATA_MODELS = new Set<string>([
   "AssistantKnowledgeFile",
   "AssistantService",
   "AssistantStaff",
+  "OrgProduct",
+  // Outbound Sales (Product 2)
+  "OutboundContact",
+  "ContactImport",
+  "ContactSegment",
+  "OutboundAgent",
+  "OutboundAgentAction",
+  "Lead",
+  "LeadActivity",
+  "LeadImport",
+  "OutboundCall",
+  "Campaign",
+  "CampaignContact",
+  "OutboundMeeting",
 ]);
 
 type AnyArgs = Record<string, unknown> & {

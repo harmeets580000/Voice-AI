@@ -22,9 +22,16 @@ import {
   FlaskConical,
   ShieldCheck,
   ChevronDown,
+  Filter,
+  Megaphone,
+  Target,
+  Package,
   type LucideIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@features/auth/AuthProvider";
+import { api } from "@shared/api/client";
+import type { ProductsResponse } from "@contracts/products";
 import { Role } from "@domain/enums";
 import {
   OrgSwitcher,
@@ -57,52 +64,93 @@ const OPERATIONS: NavItem[] = [
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/customers", label: "Customers", icon: Contact },
 ];
+// Outbound Sales (Product 2) — grouped like Inbound: an overview at the top, the reusable building
+// blocks under "Library", the live sales activity under "Operations", then Help. Revealed only when
+// OUTBOUND_SALES is enabled for the active org (see the product registry).
+const OUTBOUND_LIBRARY: NavItem[] = [
+  { href: "/outbound/contacts", label: "Contacts", icon: Contact },
+  { href: "/outbound/segments", label: "Segments", icon: Filter },
+  { href: "/outbound/agents", label: "Agents", icon: Bot },
+];
+const OUTBOUND_OPERATIONS: NavItem[] = [
+  { href: "/outbound/campaigns", label: "Campaigns", icon: Megaphone },
+  { href: "/outbound/leads", label: "Leads", icon: Target },
+];
 
 // The sidebar is role-aware. Org users live in Inbound (their own org): the Assistant is the hub, the
 // Library group holds the shared building blocks it selects from, Operations is live data, and Help
 // explains the inbound-call flow. Super-admins get a dedicated "Super admin" section first (platform
-// dashboard + Vapi settings/tester) and use Inbound when acting as a specific org. Dashboard lives under
-// Inbound for org users and under Super admin for super-admins.
-function buildNavSections(isSuper: boolean): NavSection[] {
+// dashboard + Vapi settings/tester) and use Inbound when acting as a specific org. The Outbound section
+// is gated on the product registry (`outboundEnabled`); admins get a Products toggle to turn it on.
+function buildNavSections(role: Role, outboundEnabled: boolean): NavSection[] {
+  const isSuper = role === Role.SUPER_ADMIN;
+  const isAdmin = isSuper || role === Role.ORG_ADMIN;
+
+  const inboundGroups: NavGroup[] = [
+    {
+      items: [
+        ...(isSuper
+          ? []
+          : [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }]),
+        { href: "/assistants", label: "Assistants", icon: Bot },
+      ],
+    },
+    { heading: "Library", items: LIBRARY },
+    { heading: "Operations", items: OPERATIONS },
+    { items: [{ href: "/help", label: "Help", icon: HelpCircle }] },
+  ];
+  // Org admins reach the Products toggle from a Settings group; super-admins from their section.
+  if (isAdmin && !isSuper) {
+    inboundGroups.push({
+      heading: "Settings",
+      items: [{ href: "/settings/products", label: "Products", icon: Package }],
+    });
+  }
   const inbound: NavSection = {
     title: "Inbound",
     icon: PhoneIncoming,
-    groups: [
-      {
-        items: [
-          ...(isSuper
-            ? []
-            : [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }]),
-          { href: "/assistants", label: "Assistants", icon: Bot },
-        ],
-      },
-      { heading: "Library", items: LIBRARY },
-      { heading: "Operations", items: OPERATIONS },
-      { items: [{ href: "/help", label: "Help", icon: HelpCircle }] },
-    ],
+    groups: inboundGroups,
   };
+
   const outbound: NavSection = {
     title: "Outbound",
     icon: PhoneOutgoing,
-    groups: [],
-    placeholder: "Coming soon",
-  };
-  if (!isSuper) return [inbound, outbound];
-
-  const superAdmin: NavSection = {
-    title: "Super admin",
-    icon: ShieldCheck,
     groups: [
       {
         items: [
-          { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-          { href: "/organizations", label: "Vapi Settings", icon: Building2 },
-          { href: "/vapi-tester", label: "Vapi Tester", icon: FlaskConical },
+          {
+            href: "/outbound/dashboard",
+            label: "Sales dashboard",
+            icon: LayoutDashboard,
+          },
         ],
       },
+      { heading: "Library", items: OUTBOUND_LIBRARY },
+      { heading: "Operations", items: OUTBOUND_OPERATIONS },
+      { items: [{ href: "/outbound/help", label: "Help", icon: HelpCircle }] },
     ],
   };
-  return [superAdmin, inbound, outbound];
+
+  const sections: NavSection[] = [];
+  if (isSuper) {
+    sections.push({
+      title: "Super admin",
+      icon: ShieldCheck,
+      groups: [
+        {
+          items: [
+            { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+            { href: "/organizations", label: "Vapi Settings", icon: Building2 },
+            { href: "/vapi-tester", label: "Vapi Tester", icon: FlaskConical },
+            { href: "/settings/products", label: "Products", icon: Package },
+          ],
+        },
+      ],
+    });
+  }
+  sections.push(inbound);
+  if (outboundEnabled) sections.push(outbound);
+  return sections;
 }
 
 function NavHeading({ children }: { children: React.ReactNode }) {
@@ -181,8 +229,21 @@ function NavLink({
 const NAV_COLLAPSE_KEY = "navCollapsedSections";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, activeOrgId } = useAuth();
   const router = useRouter();
+
+  // Which products are enabled for the active org — drives the Outbound nav gate. Reactive to the
+  // super-admin org switcher (activeOrgId). Skipped in the super-admin platform view (no active org).
+  const isSuper = user?.role === Role.SUPER_ADMIN;
+  const { data: productsData } = useQuery({
+    queryKey: ["products", activeOrgId],
+    queryFn: () => api.get<ProductsResponse>("/products"),
+    enabled: !!user && (!isSuper || !!activeOrgId),
+    staleTime: 60_000,
+  });
+  const outboundEnabled = (productsData?.products ?? []).some(
+    (p) => p.product === "OUTBOUND_SALES" && p.status === "active",
+  );
 
   // Collapsible nav sections, persisted across reloads. The nav only renders after the auth loading
   // gate (client-side), so reading localStorage in the lazy initializer is safe — no hydration mismatch.
@@ -224,7 +285,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
   if (!user) return null;
 
-  const sections = buildNavSections(user.role === Role.SUPER_ADMIN);
+  const sections = buildNavSections(user.role, outboundEnabled);
 
   return (
     <div className="min-h-screen bg-bg">

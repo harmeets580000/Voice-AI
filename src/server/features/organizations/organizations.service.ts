@@ -143,7 +143,9 @@ export async function updateOrganization(
 }
 
 /** Resolve the decrypted provider key for an org (per-customer override, else platform). */
-async function resolveProviderKey(orgId: string): Promise<string | undefined> {
+export async function resolveProviderKey(
+  orgId: string,
+): Promise<string | undefined> {
   const cfg = await prisma.orgVapiConfig.findUnique({
     where: { organizationId: orgId },
     select: { vapiPrivateKeyEnc: true },

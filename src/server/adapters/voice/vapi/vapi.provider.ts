@@ -349,6 +349,21 @@ export class VapiVoiceProvider implements VoiceProvider {
     return CURATED_MODELS;
   }
 
+  async listPhoneNumbers(input: { providerApiKey?: string }) {
+    // Best-effort: list the account's phone numbers for the outbound from-number picker.
+    try {
+      const client = this.client(input.providerApiKey);
+      const list = await client.phoneNumbers.list({ limit: 100 });
+      const arr = Array.isArray(list) ? list : [];
+      return arr
+        .map((pn) => ({ id: String(pn.id ?? ""), number: String(pn.number ?? "") }))
+        .filter((pn) => pn.id && pn.number);
+    } catch (e) {
+      logger.warn("listPhoneNumbers: Vapi fetch failed", { error: String(e) });
+      return [];
+    }
+  }
+
   async provisionTools(input: {
     organizationId: string;
     publicApiBaseUrl: string;

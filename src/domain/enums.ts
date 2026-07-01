@@ -77,6 +77,23 @@ export const CallDirection = {
 export type CallDirection = (typeof CallDirection)[keyof typeof CallDirection];
 
 /**
+ * Products (modules) an org can enable. AI_RECEPTIONIST is the always-on base product;
+ * OUTBOUND_SALES (Product 2) is opt-in via the product registry (OrgProduct).
+ */
+export const ProductKey = {
+  AI_RECEPTIONIST: "AI_RECEPTIONIST",
+  OUTBOUND_SALES: "OUTBOUND_SALES",
+} as const;
+export type ProductKey = (typeof ProductKey)[keyof typeof ProductKey];
+
+export const OrgProductStatus = {
+  ACTIVE: "active",
+  INACTIVE: "inactive",
+} as const;
+export type OrgProductStatus =
+  (typeof OrgProductStatus)[keyof typeof OrgProductStatus];
+
+/**
  * Receptionist tools the voice provider can call. The first three are the default
  * auto-provisioned built-ins; the rest form the selectable org-level tool catalog
  * (each assistant picks a subset). All are dispatched by the tool registry.

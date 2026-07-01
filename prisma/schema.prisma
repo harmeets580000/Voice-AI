@@ -66,6 +66,19 @@ enum ReminderStatus {
   failed
 }
 
+// Product registry — which products (modules) an org has enabled. AI_RECEPTIONIST is the
+// base product (implicitly on); OUTBOUND_SALES is opt-in. Values are provider-neutral
+// identifiers (UPPER) to match the product catalog; new products append here.
+enum ProductKey {
+  AI_RECEPTIONIST
+  OUTBOUND_SALES
+}
+
+enum OrgProductStatus {
+  active
+  inactive
+}
+
 // ---------- Tenancy root ----------
 
 model Organization {
@@ -107,7 +120,42 @@ model Organization {
   assistantServices       AssistantService[]
   assistantStaff          AssistantStaff[]
 
+  // Product registry (which modules this org has enabled).
+  orgProducts OrgProduct[]
+
+  // Outbound Sales (Product 2) — a self-contained module (its own contacts/leads/etc.).
+  outboundContacts     OutboundContact[]
+  contactImports       ContactImport[]
+  contactSegments      ContactSegment[]
+  outboundAgents       OutboundAgent[]
+  outboundAgentActions OutboundAgentAction[]
+  leads                Lead[]
+  leadActivities       LeadActivity[]
+  leadImports          LeadImport[]
+  outboundCalls        OutboundCall[]
+  campaigns            Campaign[]
+  campaignContacts     CampaignContact[]
+  outboundMeetings     OutboundMeeting[]
+
   @@map("organizations")
+}
+
+// ---------- Product registry ----------
+// One row per (org, product) that has been explicitly toggled. Absence of a row = default
+// (AI_RECEPTIONIST on, OUTBOUND_SALES off). Org-scoped: registered in CUSTOMER_DATA_MODELS.
+
+model OrgProduct {
+  id             String           @id @default(cuid())
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product        ProductKey
+  status         OrgProductStatus @default(inactive)
+  enabledAt      DateTime?
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([organizationId, product])
+  @@index([organizationId])
+  @@map("org_products")
 }
 
 // ---------- Per-org Vapi connection (org-level credential + sync) ----------
@@ -625,4 +673,326 @@ model Reminder {
   @@index([organizationId])
   @@index([status, scheduledFor])
   @@map("reminders")
+}
+
+// ============================================================
+// Outbound Sales & Lead Gen (Product 2)
+// A self-contained module: shares only Organization/User/Role with Inbound. Every model
+// below is org-scoped (registered in CUSTOMER_DATA_MODELS) and independent of the inbound
+// Customer/Call/Booking tables (by design — see the build plan).
+// ============================================================
+
+// The sales "Contacts" — the audience for campaigns/leads. optOut/DNC + tags/source/custom
+// fields live here (not on the inbound Customer). Deduped by phone/email within an org.
+model OutboundContact {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String?
+  phone          String?
+  email          String?
+  notes          String?
+  optOut         Boolean      @default(false)
+  optOutReason   String?
+  tags           String[]     @default([])
+  source         String? // origin tag: IMPORT | MANUAL | PROMOTED | ...
+  customFields   Json? // arbitrary imported columns
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  leads         Lead[]
+  outboundCalls OutboundCall[]
+
+  @@index([organizationId])
+  @@index([organizationId, phone])
+  @@index([organizationId, email])
+  @@map("outbound_contacts")
+}
+
+// Audit of a CSV contact import run (column map + counts + errors).
+model ContactImport {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  filename       String
+  mappingJson    Json?
+  totalRows      Int          @default(0)
+  importedRows   Int          @default(0)
+  skippedRows    Int          @default(0)
+  errorsJson     Json?
+  status         String       @default("COMPLETED") // PENDING|VALIDATED|COMPLETED|FAILED
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@map("contact_imports")
+}
+
+// A saved, reusable audience filter over OutboundContacts.
+model ContactSegment {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  filterJson     Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@map("contact_segments")
+}
+
+enum OutboundAgentStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+// Config-only this phase. The editor persists these; NOTHING executes until the MAF runtime.
+enum OutboundActionType {
+  QUALIFY_LEAD
+  BOOK_MEETING
+  CAPTURE_CONTACT
+  SEND_FOLLOWUP
+  MARK_DNC
+  ANSWER_KB
+}
+
+// A sales script/persona for VOICE campaigns + one-off calls. Multiple per org (unlike the
+// Receptionist's one/org). providerAssistantId is reserved for the future runtime.
+model OutboundAgent {
+  id                  String              @id @default(cuid())
+  organizationId      String
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name                String
+  language            String              @default("en-US")
+  voiceId             String?
+  persona             String?
+  openingLine         String?
+  systemPrompt        String?
+  goalsJson           Json?
+  behaviorJson        Json?
+  status              OutboundAgentStatus @default(DRAFT)
+  providerAssistantId String? // future runtime
+  // From-number for outbound calls/campaigns — the org's Vapi number (pulled live via the port).
+  providerPhoneNumber   String? // E.164
+  providerPhoneNumberId String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  actions OutboundAgentAction[]
+
+  @@index([organizationId])
+  @@map("outbound_agents")
+}
+
+// Config-only agent actions. Enabling + editing configJson persists intent; nothing runs
+// (e.g. MARK_DNC does NOT set OutboundContact.optOut this phase).
+model OutboundAgentAction {
+  id              String             @id @default(cuid())
+  outboundAgentId String
+  outboundAgent   OutboundAgent      @relation(fields: [outboundAgentId], references: [id], onDelete: Cascade)
+  organizationId  String // denormalized for scoping; NOT the sole tenant guard
+  organization    Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type            OutboundActionType
+  enabled         Boolean            @default(false)
+  configJson      Json?
+  order           Int                @default(0)
+
+  @@unique([outboundAgentId, type])
+  @@index([organizationId])
+  @@map("outbound_agent_actions")
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL
+  WON
+  LOST
+}
+
+enum LeadSource {
+  OUTBOUND_CALL
+  CAMPAIGN
+  INBOUND_CALL
+  MANUAL
+  IMPORT
+}
+
+// A promoted/entered OutboundContact worked through the sales pipeline.
+model Lead {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactId      String
+  contact        OutboundContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  stage          LeadStage       @default(NEW)
+  source         LeadSource
+  ownerUserId    String? // assigned rep (a User)
+  value          Decimal?        @db.Decimal(12, 2)
+  campaignId     String?
+  callId         String? // originating OutboundCall
+  leadImportId   String? // if created via CSV (Q3.5)
+  lostReason     String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  activities LeadActivity[]
+
+  @@index([organizationId, stage])
+  @@index([organizationId, contactId])
+  @@map("leads")
+}
+
+// Append-only timeline: CREATED | STAGE_CHANGED | NOTE | ASSIGNED | CALL | CONVERTED.
+model LeadActivity {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leadId         String
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type           String
+  dataJson       Json?
+  userId         String?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@index([leadId])
+  @@map("lead_activities")
+}
+
+// Audit of a CSV lead-import run. Each row upserts a Contact first, then creates a Lead.
+model LeadImport {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  filename       String
+  mappingJson    Json?
+  totalRows      Int          @default(0)
+  importedRows   Int          @default(0)
+  skippedRows    Int          @default(0)
+  errorsJson     Json?
+  status         String       @default("COMPLETED") // PENDING|VALIDATED|COMPLETED|FAILED
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@map("lead_imports")
+}
+
+enum OutboundCallStatus {
+  QUEUED
+  RINGING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// The outbound module's OWN call log (separate from the inbound, Vapi-mirrored Call). This
+// phase they are QUEUED stubs — no real dial. Generated by one-off calls (§E) + campaigns (§D).
+model OutboundCall {
+  id                String             @id @default(cuid())
+  organizationId    String
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactId         String?
+  contact           OutboundContact?   @relation(fields: [contactId], references: [id])
+  leadId            String?
+  campaignId        String?
+  outboundAgentId   String?
+  status            OutboundCallStatus @default(QUEUED)
+  fromNumber        String?
+  toNumber          String?
+  initiatedByUserId String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@map("outbound_calls")
+}
+
+// Only VOICE is launchable this phase; SMS/WHATSAPP/EMAIL are reserved seams (present so the
+// messaging path returns without a migration) — rejected in UI + server.
+enum CampaignChannel {
+  VOICE
+  SMS
+  WHATSAPP
+  EMAIL
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+// A voice campaign over a segment/ad-hoc audience. Launch (stub) generates QUEUED OutboundCalls.
+model Campaign {
+  id              String          @id @default(cuid())
+  organizationId  String
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  channel         CampaignChannel @default(VOICE)
+  outboundAgentId String? // required for VOICE launch
+  templateId      String? // RESERVED (messaging, future)
+  segmentId       String? // audience source
+  audienceJson    Json? // resolved/ad-hoc audience filter
+  pacingPerHour   Int             @default(60)
+  quietHoursJson  Json?
+  status          CampaignStatus  @default(DRAFT)
+  statsJson       Json? // {total,queued,skipped}
+  scheduledAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  members CampaignContact[]
+
+  @@index([organizationId])
+  @@map("campaigns")
+}
+
+model CampaignContact {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaignId     String
+  campaign       Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId      String
+  status         String       @default("PENDING") // PENDING|QUEUED|DONE|SKIPPED
+  outboundCallId String? // VOICE → stub OutboundCall
+  messageId      String? // RESERVED (messaging, future)
+
+  @@unique([campaignId, contactId])
+  @@index([organizationId])
+  @@map("campaign_contacts")
+}
+
+enum OutboundMeetingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+// The outbound module's OWN minimal scheduler: a meeting between a lead's contact and an owner
+// rep (a User). Double-booking of the rep is guarded in meeting.engine.ts.
+model OutboundMeeting {
+  id             String                @id @default(cuid())
+  organizationId String
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leadId         String
+  contactId      String
+  ownerUserId    String
+  startDatetime  DateTime
+  endDatetime    DateTime
+  status         OutboundMeetingStatus @default(SCHEDULED)
+  notes          String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  @@index([organizationId, ownerUserId, startDatetime])
+  @@map("outbound_meetings")
 }
