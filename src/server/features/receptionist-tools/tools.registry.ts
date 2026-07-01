@@ -454,6 +454,12 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       );
       return {
         count: services.length,
+        // Speak this verbatim when empty — an empty list is a valid answer ("we don't offer any yet"),
+        // never a retrieval failure. Prevents the model from saying "I'm unable to retrieve services".
+        message:
+          services.length === 0
+            ? "This business has no services set up yet, so there's nothing to book right now."
+            : undefined,
         services: services.map((s) => ({
           id: s.id,
           name: s.name,
@@ -507,6 +513,11 @@ export const TOOL_REGISTRY: Record<string, ToolEntry> = {
       );
       return {
         count: staff.length,
+        // Speak this verbatim when empty rather than implying a lookup error.
+        message:
+          staff.length === 0
+            ? "This business has no staff members available to book with yet."
+            : undefined,
         staff: staff.map((s) => ({ id: s.id, name: s.name, title: s.title })),
       };
     },

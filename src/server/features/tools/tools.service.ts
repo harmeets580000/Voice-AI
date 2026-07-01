@@ -178,25 +178,48 @@ export async function ensureToolsProvisionedInVapi(
 export async function ensureBuiltinTools(orgId: string): Promise<void> {
   const existing = await prisma.vapiTool.findMany({
     where: { organizationId: orgId },
-    select: { name: true },
+    select: { id: true, name: true, kind: true, description: true, parameters: true },
   });
-  const have = new Set(existing.map((t) => t.name));
-  const missing = CATALOG_TOOLS.filter((b) => !have.has(b.name));
-  if (missing.length === 0) return;
-  await prisma.vapiTool.createMany({
-    data: missing.map((b) => ({
-      organizationId: orgId,
-      name: b.name,
-      kind: "builtin",
-      enabled: b.builtin, // built-ins on by default; other catalog tools opt-in per assistant
-      description: b.description,
-      parameters: b.parameters as Prisma.InputJsonValue,
-      serverUrl: toolsWebhookUrl(orgId),
-      staticParams: { organization_id: orgId },
-      syncStatus: "pending",
-    })),
-    skipDuplicates: true,
-  });
+  const byName = new Map(existing.map((t) => [t.name, t]));
+  const missing = CATALOG_TOOLS.filter((b) => !byName.has(b.name));
+  if (missing.length > 0) {
+    await prisma.vapiTool.createMany({
+      data: missing.map((b) => ({
+        organizationId: orgId,
+        name: b.name,
+        kind: "builtin",
+        enabled: b.builtin, // built-ins on by default; other catalog tools opt-in per assistant
+        description: b.description,
+        parameters: b.parameters as Prisma.InputJsonValue,
+        serverUrl: toolsWebhookUrl(orgId),
+        staticParams: { organization_id: orgId },
+        syncStatus: "pending",
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  // Self-heal: the code catalog is the source of truth for a built-in's description + parameter
+  // schema. `createMany` above only inserts *new* rows, so a row created before its schema existed
+  // (e.g. an early `check_availability` with no parameters) would keep syncing an empty schema to
+  // the provider forever. Refresh any catalog-backed row that has drifted, and mark it `pending`
+  // so the next Re-sync repushes the corrected schema. Custom tools (kind "custom") are untouched.
+  for (const b of CATALOG_TOOLS) {
+    const row = byName.get(b.name);
+    if (!row || row.kind === "custom") continue;
+    const paramsDrift =
+      JSON.stringify(row.parameters ?? null) !== JSON.stringify(b.parameters ?? null);
+    const descDrift = (row.description ?? "") !== (b.description ?? "");
+    if (!paramsDrift && !descDrift) continue;
+    await prisma.vapiTool.update({
+      where: { id: row.id },
+      data: {
+        description: b.description,
+        parameters: b.parameters as Prisma.InputJsonValue,
+        syncStatus: "pending",
+      },
+    });
+  }
 }
 
 export async function listTools(orgId: string): Promise<VapiToolDTO[]> {
